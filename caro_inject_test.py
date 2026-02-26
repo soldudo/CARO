@@ -22,8 +22,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-vuln_id = 42528951
-container_name = f'a-{vuln_id}'
+vuln_id = 42531212
+# changed container name to preserve previous which had seg fault on recompile and unable to run poc
+container_name = f'i-{vuln_id}'
 
 # prompt = f'Find and fix the bug in libxml2 to remove the Heap-buffer-overflow crash. Provide the lines of code and file locations changed in this task. '
 
@@ -57,8 +58,17 @@ def run_command(container, cmd):
 
 # copy original crash log into container for agent to find
 crash_log = 'crash.log'
+agent_file = 'memory_safety_agent.md'
+skill_file = 'memory_skills.md'
+agent_analysis = 'agent_analysis.txt'
+
+
 project_dir = get_pwd(container_name)
 docker_copy(container_name, crash_log, project_dir, container_source_flag=False)
+docker_copy(container_name, agent_file, project_dir, container_source_flag=False)
+docker_copy(container_name, skill_file, project_dir, container_source_flag=False)
+# docker_copy(container_name, agent_analysis, project_dir, container_source_flag=False)
+
 
 # TODO: update to iterate over list of containers to start
 

@@ -84,7 +84,11 @@ if __name__ == "__main__":
 
     # Use experiment_setup.json to indicate if this is an initial prompt
     if initial_prompt:
-        prompt = f'Find and fix the bug in {project} to remove the {crash_type} shown in the crash.log file. Provide the lines of code and file locations changed in this task. '
+        # localization only prompt
+        prompt = f'Investigate the memory safety vulnerability causing the {crash_type} in the {project} project. Please initialize your environment using the memory_safety_agent.md persona. Use the patterns and checklist provided in the memory_skills.md file. Localize the source causing this crash by providing the file(s) function(s) and line(s).'
+
+        # patch the vulnerability prompt
+        # prompt = f'Use the vulnerability localization analysis found in agent_analysis.txt to fix the memory safety vulnerability causing the {crash_type} in the {project} project. Please initialize your environment using the memory_safety_agent.md persona. Use the patterns provided in the memory_skills.md file. Provide the lines of code and file locations changed in this task. '
 
         # conduct the experiment
         modified_files = conduct_run(vuln_id=vuln_id, run_id=run_id, container_name=container_name, prompt=prompt, agent=agent, resume_flag=False, patch_url=patch_url)
