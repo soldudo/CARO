@@ -106,7 +106,7 @@ def cleanup_container(container_name: str):
     cmd = ['docker', 'rm', '-f', container_name]
     run_command(cmd, check=False)
 
-def cleanup_cinc(container_name: str, rootainer_name: str = 'rootainer'):
+def cleanup_dind(container_name: str, rootainer_name: str = 'rootainer'):
     logger.debug(f"Cleaning up container {container_name} in container {rootainer_name}")
     root_cmd = ['docker', 'exec', rootainer_name]
     target_cmd = ['docker', 'rm', '-f', container_name]

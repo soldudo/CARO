@@ -2,15 +2,14 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
-from arvo_tools import standby_container, standby_dind, cleanup_cinc
-from queries import init_db, record_run, insert_crash_log, get_original_crash_log
-from schema import RunRecord, CrashLogType
+from arvo_tools import standby_dind, cleanup_dind
+from queries import get_original_crash_log
 import subprocess
 import time
 
 logger = logging.getLogger(__name__)
 
-# TODO: Update to handle Claude (camel case Model:)
+# This would only be used for Codex runs
 def get_model(container_name: str):
     agent_model = None
     command = ['docker', 'exec', container_name, 'codex', 'exec', '/status']
@@ -93,14 +92,14 @@ def process_codex_event(event):
 def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, agent: str, resume_flag: bool = False, resume_session_id: str =None, patch_url: str = None):
 
     # in case previous run crashed. Handle this better
-    cleanup_cinc('vulnscan')
+    cleanup_dind('vulnscan')
 
     standby_dind(container_name='vulnscan', vuln_id=vuln_id)
 
+    # TODO: Add robust handling & failsafe of crash_log copy to container
     crash_log_original = get_original_crash_log(vuln_id)
 
     copy_crash_cmd = ['docker', 'exec', '-i', 'rootainer', 'sh', '-c', 'cat > opt/agent/crash.log']
-
     process = subprocess.Popen(
         copy_crash_cmd,
         stdin=subprocess.PIPE,
@@ -109,46 +108,35 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
     process.communicate(input=crash_log_original)
     
     if process.returncode == 0:
-        print("Streamed successfully.")
+        logger.info("Original crash log copied into rootainer successfully.")
 
+    if (agent == 'claude'):
+        agent_args = ['claude', '-p', prompt]
+        
+        # Handle resuming a previous session
+        if resume_flag and resume_session_id:
+            agent_args += ['--resume', resume_session_id]
+        # resume previous session if no session_id passed
+        elif resume_flag and not resume_session_id:
+            agent_args += ['--continue']
+        agent_args += ['--output-format', 'json']
 
-    if (agent == 'codex'):
+    # not currently using codex
+    elif (agent == 'codex'):
         agent_model = get_model(container_name)
         agent_args = ['codex', 'exec', '--json', '--full-auto', prompt]
 
-    # TODO: change hard coded model to dynamic function
-    elif (agent == 'claude'):
-        agent_model = 'claude-opus-4-6'
-        agent_args = ['claude', '-p', prompt, '--output-format', 'json']
+    command = ['docker', 'exec', container_name] + agent_args
 
-    # first attempt
-    if not resume_flag:
-        command = ['docker', 'exec', container_name] + agent_args
-        log_path = Path(__file__).parent / "runs" / run_id / f"agent_{run_id}.log"
-
-    # TODO Current setup does not utilize second attempts so this portion is out of date
-    # TODO Must update to docker exec before running second attempts !!! 
-
-    # second attempt on 1) last session or 2) specified session
-    else:
-        log_path = Path(__file__).parent / "runs" / run_id / f"agent_{run_id}_patch2.log"
-        if not resume_session_id:
-            command = ['codex', 'exec', '--json', '--full-auto', 'resume', '--last', prompt]
-        else:
-            command = ['codex', 'exec', '--json', '--full-auto', 'resume', resume_session_id, prompt]
-
+    log_path = Path(__file__).parent / "runs" / run_id / f"agent_{run_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(f'Logging to {log_path}\n')
     logger.info(f"Invoking agent with: {command}")
     
-    start_time = time.time()
-    duration = 0.0
+    start_time = int(time.time())
+    duration = 0
     return_code = None
-    modified_files = []
-    workspace_relative = ''
-
-    workspace_relative = get_pwd(container_name)    
 
     with open(log_path, 'w', encoding='utf-8') as log_file:
         meta_start = {
@@ -157,9 +145,7 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
             'timestamp_unix': start_time,
             'vuln': vuln_id,
             'patch_url': patch_url,
-            'workspace': str(workspace_relative),
-            'command': command[:-1],
-            'prompt': prompt
+            'command': command
         }
 
         log_file.write(json.dumps(meta_start) + '\n')
@@ -182,7 +168,7 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
                     continue
 
                 log_entry = {
-                    'log_type': 'stream_output',
+                    'log_type': 'agent_output',
                     'timestamp_iso': datetime.now().isoformat(),
                     'timestamp_unix': time.time(),
                     'data': None
@@ -191,47 +177,10 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
                 try:
                     event = json.loads(line)
                     log_entry['data'] = event
+                    
+                    # codex not currently used
                     if agent == "codex":
                         process_codex_event(event)
-                    # elif agent == "claude":
-
-                #     msg_type = event.get('type')
-
-                #     # Case 1: Command Execution Result
-                #     if msg_type == 'item.completed' and event.get('item', {}).get('type') == 'command_execution':
-                #         item = event['item']
-                #         raw_output = item.get('aggregated_output', '')
-                #         exit_code = item.get('exit_code')
-                #         print(f"\n[agent_exe_result - Exit {exit_code}]:\n{raw_output}")
-
-                #     # Case 2: Reasoning (Thinking)
-                #     elif msg_type == 'item.completed' and event.get('item', {}).get('type') == 'reasoning':
-                #         text = event['item'].get('text', '').replace('**', '')
-                #         print(f"\n[agent_reasoning]: {text}")
-                    
-                #     # Case 3: Executing Command
-                #     elif msg_type == 'item.started' and event.get('item', {}).get('type') == 'command_execution':
-                #         print(f"\n> [agent_executing]: {event['item'].get('command')}")
-
-                #     # Case 4: Final Message
-                #     elif msg_type == 'item.completed' and event.get('item', {}).get('type') =='agent_message':
-                #         text = event['item'].get('text', '')
-                #         print(f"\n[agent_message]: {text}")
-                #         agent_reasoning = text  
-
-                #     # agent session id - parameter for resume
-                #     elif msg_type ==  'thread.started':
-                #         thread_id = event.get('thread_id')
-                #         print(f"\n[agent_session_id]: {thread_id}")
-
-                #     # token usage
-                #     elif msg_type == 'turn.completed':
-                #         usage = event.get('usage')
-                #         input_tokens = usage.get('input_tokens') 
-                #         cached_input_tokens = usage.get('cached_input_tokens')
-                #         output_tokens = usage.get('output_tokens')
-                #         # input tokens should include cached_input_tokens
-                #         total_tokens = input_tokens + output_tokens 
 
                 except Exception as e:
                     print(f'Error processing stdout line: {e}')
@@ -245,43 +194,7 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
             end_time = time.time()
             duration = end_time - start_time
 
-            logger.info(f'Codex run completed with return code {return_code} in {duration:.8f} seconds.')
-
-            # Find modified files logic removed for localization
-            # get files modified by agent
-            # try:
-            #     find_result = subprocess.run([
-            #         'docker', 'exec', container_name,
-            #         'find', workspace_relative, # search agent's workspace
-            #         '-type', 'f',
-            #         '-newermt', f'@{start_time}', # files modified since run's start_time
-            #         '-printf', '%p\n'
-            #     ],
-            #     capture_output=True, text=True, check=False)
-
-            #     if find_result.returncode != 0:
-            #         logger.error(f"FIND COMMAND FAILED (Exit Code {find_result.returncode}):")
-            #         logger.error(find_result.stderr)
-
-            #     logger.info(f'find_result stdout: {find_result.stdout}')
-
-            #     if find_result.stdout:
-            #         logger.info('Modified files found. Most recent 10:')
-            #         result_filelist = find_result.stdout.splitlines()
-            #         # If numerous modified files found, only keep selection from end 
-            #         # Agents may build tools to aid investigation leading to many non-patch files
-            #         MODIFIED_FILES_MAX = 10
-            #         if len(result_filelist) > MODIFIED_FILES_MAX:
-            #             result_filelist = result_filelist[-MODIFIED_FILES_MAX:]
-
-                        
-            #         logger.info(f"Found {len(result_filelist)} files modified by agent: ")
-            #         for line in result_filelist:
-            #             logger.info(line)
-            #             modified_files.append(line)
-
-            # except Exception as e:
-            #     logger.error(f'Error finding modified files: {e}')
+            logger.info(f'Coding agent run completed with return code {return_code} in {duration:.8f} seconds.')
 
             stderr_output = process.stderr.read()
             if stderr_output:
@@ -316,7 +229,6 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
                 'timestamp_unix': time.time(),
                 'duration_seconds': duration,
                 'return_code': return_code,
-                # 'modified_files': modified_files    
             }
             log_file.write(json.dumps(meta_end) + '\n')
             log_file.close()
@@ -332,7 +244,7 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
 
 
             # wipe arvo container in rootainer
-            cleanup_cinc('vulnscan')
+            cleanup_dind('vulnscan')
 
             # # initialize runs table
             # init_db()
@@ -366,4 +278,4 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
             # crash_log = get_container_cat(container_name=container_name, file_path=full_path)
             # insert_crash_log(run_id=run_id, kind=CrashLogType.ORIGINAL, crash_log=crash_log)
     
-    return None
+    return log_path

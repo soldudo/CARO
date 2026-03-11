@@ -2,7 +2,7 @@ import sqlite3
 import logging
 import json
 from typing import Optional
-from schema import ContentType, CrashLogType, RunRecord
+from schema import CrashLogType, RunRecord
 
 logger = logging.getLogger(__name__)
 
