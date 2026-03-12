@@ -2,17 +2,17 @@
 
 **CARO** localization branch readme
 
-## Working prototype cautions:
-* Runs are currently only saved to the local drive.
-* New db tables and queries are not yet implemented.
-* These saved runs will be parsed and loaded into the experiment database at a later time, so please preserve them.
+## 2026-03-11 Updates:
+* caro now saves runs to re-worked .db tables
+* run_parser.py can still be run directly to load runs previously saved to disk
+* narrative_viewer.py filter by agent text, thinking, or commands
 
 ## Preparation (crash log)
 Caro injects a copy of the arvo vulnerability's original crash log from the experiment database.
 * **WARNING**  Some entries in the arvo database are missing the original crash log.
 * Before running a batch of experiments, verify their crash logs are available in the database.
 * If a crash log is missing please use the arvo container to generate a crash log and update the db entry.
-* Instructions and script will be added to aid this
+* Instructions and script to be added
 * NOTE: Some containers may require multiple attempts to generate the crash before a crash successfully occurs. This is a manual process requiring review of the generated log. 
 
 ## Setup Claude's container (once)
@@ -41,9 +41,9 @@ Caro injects a copy of the arvo vulnerability's original crash log from the expe
 * Claude's final output will be a final localization json report.
 
 ## Configuration
-Batch experiment instructions will be added here once tested
+Batch experiment implementation pending usage state monitoring
 
-Set the ARVO vulnerability ID the experiment will be conducted on via **`experiment_setup.json`** in the project root. Also set the following settings for current localization branch:
+Set the ARVO vulnerability ID via **`experiment_setup.json`** in the project root. Also set the following:
 
 ```json
 {
@@ -56,18 +56,17 @@ Set the ARVO vulnerability ID the experiment will be conducted on via **`experim
 
 ## To Conduct Experiment
 
-After setting an **'arvo_id'** in the **'experiment_setup.json'** run caroline.py
+After setting an **'arvo_id'** in the **'experiment_setup.json'** run caro.py
+
+## Run Tables
+* runs - metadata and results for each run
+* run_events - stores each discrete event by type and turn along with usage data dictionary
 
 ## Logs
 
-The agent's session will be documented in **'runs/arvo-vuln_ID-timestamp/'** along with artifacts (files & crash logs).
+The agent's session will be documented in **'runs/arvo-vuln_ID-timestamp/'** and uploaded to the arvo experiment sqlite database.
 
-View caroline.log to debug any issues.
+View caro.log to debug issues.
 
-## TODO
-
-* **Implement new experiment db** Localization focused design.
-* **Parse claude's json schema** Extract location details and metrics.
-* **Update db connection in caro**
-* **Second-try Workflow** Add logic to conduct a second attempt using the resume flag, and additional context such as the patched container's crash log and filenames, line numbers and function names from ground truch patch diff.
-* **Multi-Agent Support** Implement connection and altered workflow for other agents. Current candidate: Claude Code
+## caro crashes
+If caro crashes with a Keyboard Interrupt message, check your system's storage utilization. Experiments using numerous arvo docker containers result in many dangling docker images taking up large amounts of space and will require regular pruning.

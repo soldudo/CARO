@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 from queries import get_context, update_caro_log, update_ground_truth
 from agent_tools import conduct_run
+from run_parser import parse_agent_run
 from commit_files import download_commit_files
 
 logging.basicConfig(
@@ -69,47 +70,63 @@ if __name__ == "__main__":
         prompt = 'continue where you left off'
         resume_id = experiment_params.get('resume_id', None)
 
+    run_params = {
+        "vuln_id": vuln_id,
+        "run_id": run_id,
+        "container_name": container_name,
+        "prompt": prompt,
+        "agent": agent,
+        "resume_flag": resume_flag,
+        "resume_session_id": resume_id,
+        "patch_url": patch_url
+    }
+ 
     # conduct the experiment
-    agent_log_path = conduct_run(vuln_id=vuln_id, run_id=run_id, container_name=container_name, prompt=prompt, agent=agent, resume_flag=resume_flag, resume_session_id=resume_id, patch_url=patch_url)
+    try:
+        parse_agent_run(conduct_run(**run_params))
+    except Exception as e:
+        logger.error(f'Error encountered: {e}')
 
+    # Ground truth logic deactivated pending rework to diff
+    
     # copy original versions of modified files to db
     
-    run_path = Path(__file__).parent / 'runs' / run_id
+    # run_path = Path(__file__).parent / 'runs' / run_id
 
-    # download ground truth from repo commit url
-    try:
-        ground_truth_files = download_commit_files(patch_url, run_path)
-    except Exception as e:
-        logger.error(f'Skipping download. Error getting commit files from {patch_url}: {e}') 
-        ground_truth_files = []
+    # # download ground truth from repo commit url
+    # try:
+    #     ground_truth_files = download_commit_files(patch_url, run_path)
+    # except Exception as e:
+    #     logger.error(f'Skipping download. Error getting commit files from {patch_url}: {e}') 
+    #     ground_truth_files = []
     
-    # send ground truth files to db
-    for gt_file in ground_truth_files:
-        gt_path = Path(gt_file)
-        logger.debug(f'gt_path: {gt_path}')
+    # # send ground truth files to db
+    # for gt_file in ground_truth_files:
+    #     gt_path = Path(gt_file)
+    #     logger.debug(f'gt_path: {gt_path}')
 
-        try:         
-            relative_path = gt_path.relative_to(run_path)
-            logger.info(f'relative_path_str: {relative_path}')
+    #     try:         
+    #         relative_path = gt_path.relative_to(run_path)
+    #         logger.info(f'relative_path_str: {relative_path}')
 
-            # consider adding this check
-            # if len(relative_path.parts) > 1 and relative_path.parts[0] == 'grndtrth':
+    #         # consider adding this check
+    #         # if len(relative_path.parts) > 1 and relative_path.parts[0] == 'grndtrth':
                 
-            truncated_gt_path = Path(*relative_path.parts[1:])  # remove 'grndtrth' folder for db path
-            logger.info(f'truncated_gt_path for db: {truncated_gt_path}')
+    #         truncated_gt_path = Path(*relative_path.parts[1:])  # remove 'grndtrth' folder for db path
+    #         logger.info(f'truncated_gt_path for db: {truncated_gt_path}')
 
-            with open(gt_file, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-        except ValueError:
-            logger.error(f'Path error: GT file at {gt_path} is not inside {run_path}')
+    #         with open(gt_file, 'r', encoding='utf-8', errors='replace') as f:
+    #             content = f.read()
+    #     except ValueError:
+    #         logger.error(f'Path error: GT file at {gt_path} is not inside {run_path}')
 
-        except Exception as e:
-            logger.error(f'Error reading ground truth file {gt_file} for database insertion: {e}')
+    #     except Exception as e:
+    #         logger.error(f'Error reading ground truth file {gt_file} for database insertion: {e}')
 
-        try:
-            update_ground_truth(vuln_id=vuln_id, file_path=str(truncated_gt_path), content=content)
-        except Exception as e:
-            logger.error(f'Database error inserting ground truth for {truncated_gt_path}: {e}')
+    #     try:
+    #         update_ground_truth(vuln_id=vuln_id, file_path=str(truncated_gt_path), content=content)
+    #     except Exception as e:
+    #         logger.error(f'Database error inserting ground truth for {truncated_gt_path}: {e}')
 
     logger.info('######### CARO Experiment Run Complete #########')
     caro_dir = Path(__file__).parent

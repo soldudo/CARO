@@ -242,40 +242,7 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
                 logger.error(f'Error reading agent log for db storage: {e}')
                 agent_log = ''
 
-
             # wipe arvo container in rootainer
             cleanup_dind('vulnscan')
 
-            # # initialize runs table
-            # init_db()
-
-            # # DTO
-            # run_data = RunRecord(
-            #     run_id=run_id,
-            #     vuln_id=vuln_id,
-            #     workspace_relative=str(workspace_relative),
-            #     patch_url=patch_url,
-            #     prompt=prompt,
-            #     duration=duration,
-            #     input_tokens=input_tokens,
-            #     cached_input_tokens=cached_input_tokens,
-            #     output_tokens=output_tokens,
-            #     total_tokens=total_tokens,
-            #     agent=agent,
-            #     agent_model=agent_model,
-            #     resume_flag=resume_flag,
-            #     resume_id=thread_id,
-            #     agent_log=agent_log,
-            #     agent_reasoning=agent_reasoning,
-            #     modified_files=modified_files
-            # )
-
-            # # insert run record into db
-            # record_run(run_data)
-            # logger.info(f'Recorded run in database with ID {run_id}')
-
-            # full_path = workspace_relative + '/crash.log'
-            # crash_log = get_container_cat(container_name=container_name, file_path=full_path)
-            # insert_crash_log(run_id=run_id, kind=CrashLogType.ORIGINAL, crash_log=crash_log)
-    
     return log_path

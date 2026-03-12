@@ -86,6 +86,7 @@ def parse_agent_run(run_path: Path):
                 continue
 
             log_type = line.get('log_type')
+            # stream_output only needed for early runs and can phase out
             if log_type in ("agent_output", "stream_output"):
                 agent_output = line
             elif log_type == "session_start":
@@ -113,6 +114,7 @@ def parse_agent_run(run_path: Path):
     agent_insight_list = []
     agent_thought_list = []
     todo_list = []
+    result_json = {}
 
     pattern = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
 
@@ -241,7 +243,7 @@ def parse_agent_run(run_path: Path):
             ) VALUES ({placeholders})
         ''', (
             run_id, vuln_id, timestamp_iso, 'claude', agent_model,
-            result, json.dumps(result_json) if result_json else None, agent_thought_log, agent_insight_log,
+            result, json.dumps(result_json), agent_thought_log, agent_insight_log,
             duration, total_cost_usd, num_turns, input_total_tokens, output_tokens,
             total_tokens, input_tokens, input_from_cache_tokens, input_written_to_cache_tokens,
             json.dumps(usage_dict) if usage_dict else None, json.dumps(model_usage_dict) if model_usage_dict else None, 

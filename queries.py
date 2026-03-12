@@ -6,7 +6,7 @@ from schema import CrashLogType, RunRecord
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = 'arvo_experiments.db'
+DB_PATH = 'arvo_loc_runs.db'
 
 def _get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -88,7 +88,7 @@ def init_db():
         conn.close()
 
 
-# add agent_log
+# This depreciated function logs codex patching runs which are not germane to this branch
 def record_run(run_data: RunRecord):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
