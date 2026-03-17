@@ -58,6 +58,17 @@ def init_db():
                        event_usage TEXT,
             FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
         )''')
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS run_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+                       event_num INTEGER,
+                       event_type TEXT,
+                       event_text TEXT,
+                       event_usage TEXT,
+            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+        )''')
+
         conn.commit()
     finally:
         cursor.close()

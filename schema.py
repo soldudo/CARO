@@ -1,7 +1,24 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
+class RunMode(Enum):
+    LOC = 'loc'
+    PATCH = 'patch'
+    TEST = 'test'
+
+@dataclass
+class RunParams:
+    vuln_id: int
+    run_id: str
+    agent: str
+    run_mode: str
+    prompt: str
+    is_resume: bool = False
+    resume_session_id: Optional[str] = None
+
+
+# Classes below are legacy from first implementation (codex patching runs)
 class ContentType(Enum):
     ORIGINAL = "original"
     PATCHED = "patched"
@@ -14,7 +31,7 @@ class CrashLogType(Enum):
 # dataclass object definitions
 
 @dataclass
-class RunRecord:
+class LegacyRunRecord:
     run_id: str
     vuln_id: int
 

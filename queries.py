@@ -2,7 +2,7 @@ import sqlite3
 import logging
 import json
 from typing import Optional
-from schema import CrashLogType, RunRecord
+from schema import CrashLogType, LegacyRunRecord
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def init_db():
 
 
 # This depreciated function logs codex patching runs which are not germane to this branch
-def record_run(run_data: RunRecord):
+def record_run(run_data: LegacyRunRecord):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
@@ -213,6 +213,26 @@ def insert_crash_log(run_id: str, kind: CrashLogType, crash_log: str):
         cursor.close()
         conn.close()
 
+def get_localization(run_id: str, conn: Optional[sqlite3.Connection] = None):
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+    try:
+        cursor = conn.execute('SELECT result_json, vuln_id FROM runs WHERE run_id = ?', (run_id,))
+        row = cursor.fetchone()
+        if row is None:
+            logger.error(f'ERROR: No localization json found for {run_id}')
+            return None
+        return row
+
+    except sqlite3.Error as e:
+        logger.error(f'db error retrieving result_json for {run_id}: {e}')
+        return None
+    finally:
+        if should_close:
+            conn.close()
+                     
 def get_crash_log(run_id: str, kind: CrashLogType = CrashLogType.PATCH, conn: Optional[sqlite3.Connection] = None):
     should_close = False
     col_map = {
