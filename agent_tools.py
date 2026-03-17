@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from arvo_tools import standby_dind, cleanup_dind
 from queries import get_original_crash_log
+from schema import RunParams
 import subprocess
 import time
 
@@ -42,7 +43,7 @@ def get_pwd(container_name: str):
     except subprocess.CalledProcessError as e:
         logger.error(f'container {container_name} pwd failed: {e}')
 
-        
+# This needs to be refactored now that it's a separate function. Variables need to be persisted       
 def process_codex_event(event):
     try:
         msg_type = event.get('type')
@@ -87,14 +88,24 @@ def process_codex_event(event):
 
 
 
-# resume_flag = True when instructing agent to resume last or specified session
+# is_resume = True when instructing agent to resume last or specified session
 # if flag is true, but id is none, last will be used
-def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, agent: str, resume_flag: bool = False, resume_session_id: str =None, patch_url: str = None):
+# def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, agent: str, run_mode: str, is_resume: bool = False, resume_session_id: str =None):
+
+def conduct_run(run_params: RunParams):
+    vuln_id=run_params.vuln_id
+    run_id=run_params.run_id
+    agent=run_params.agent
+    run_mode=run_params.run_mode
+    prompt=run_params.prompt
+    is_resume=run_params.is_resume
+    resume_session_id=run_params.resume_session_id
+    container_name = 'rootainer' # hardcoded container name can be set here (moved from experiment_setup.json)
 
     # in case previous run crashed. Handle this better
     cleanup_dind('vulnscan')
 
-    standby_dind(container_name='vulnscan', vuln_id=vuln_id)
+    standby_dind(container_name='vulnscan', vuln_id=run_params.vuln_id)
 
     # TODO: Add robust handling & failsafe of crash_log copy to container
     crash_log_original = get_original_crash_log(vuln_id)
@@ -114,10 +125,10 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
         agent_args = ['claude', '-p', prompt]
         
         # Handle resuming a previous session
-        if resume_flag and resume_session_id:
+        if is_resume and resume_session_id:
             agent_args += ['--resume', resume_session_id]
         # resume previous session if no session_id passed
-        elif resume_flag and not resume_session_id:
+        elif is_resume and not resume_session_id:
             agent_args += ['--continue']
         agent_args += ['--output-format', 'json']
 
@@ -138,16 +149,18 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
     duration = 0
     return_code = None
 
-    with open(log_path, 'w', encoding='utf-8') as log_file:
-        meta_start = {
+    meta_start = {
             'log_type': 'session_start',
-            'timestamp_iso': datetime.now().isoformat(),
+            'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
             'timestamp_unix': start_time,
             'vuln': vuln_id,
-            'patch_url': patch_url,
-            'command': command
+            'command': command,
+            'run_mode': run_mode,
+            'prompt': prompt
         }
 
+    with open(log_path, 'w', encoding='utf-8') as log_file:
+        
         log_file.write(json.dumps(meta_start) + '\n')
         log_file.flush()
         logger.info(f'Beginning {agent} execution for {run_id}')
@@ -169,8 +182,8 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
 
                 log_entry = {
                     'log_type': 'agent_output',
-                    'timestamp_iso': datetime.now().isoformat(),
-                    'timestamp_unix': time.time(),
+                    'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
+                    'timestamp_unix': int(time.time()),
                     'data': None
                 }
 
@@ -191,31 +204,31 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
                 log_file.flush()
                 
             return_code = process.wait()
-            end_time = time.time()
+            end_time = int(time.time())
             duration = end_time - start_time
 
-            logger.info(f'Coding agent run completed with return code {return_code} in {duration:.8f} seconds.')
+            logger.info(f'Coding agent run completed with return code {return_code} in {duration} seconds.')
 
             stderr_output = process.stderr.read()
             if stderr_output:
                 print(f'\n{agent} stderr output:\n', stderr_output)
                 log_file.write(json.dumps({
                     'log_type': 'stderr_output',
-                    'timestamp_iso': datetime.now().isoformat(),
-                    'timestamp_unix': time.time(),
+                    'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
+                    'timestamp_unix': int(time.time()),
                     'data': stderr_output
                 }) + '\n')
                 # log_file.flush() # copilot rec
             
-            print(f'{agent} finished with return code {return_code} in {duration:.2f} seconds.')
+            print(f'{agent} finished with return code {return_code} in {duration} seconds.')
 
         except Exception as e:
             logger.error(f'Error during {agent} execution: {e}')
             print(f'Error during {agent} execution: {e}')
             log_file.write(json.dumps({
                 'log_type': 'execution_error',
-                'timestamp_iso': datetime.now().isoformat(),
-                'timestamp_unix': time.time(),
+                'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
+                'timestamp_unix': int(time.time()),
                 'data': str(e)
             }) + '\n')
             raise e
@@ -225,8 +238,8 @@ def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, age
             # run metrics
             meta_end = {
                 'log_type': 'session_end',
-                'timestamp_iso': datetime.now().isoformat(),
-                'timestamp_unix': time.time(),
+                'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
+                'timestamp_unix': int(time.time()),
                 'duration_seconds': duration,
                 'return_code': return_code,
             }
