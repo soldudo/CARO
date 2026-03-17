@@ -90,9 +90,13 @@ if __name__ == "__main__":
 
     # conduct the localization experiment
     try:
-        parse_agent_run(conduct_run(**run_params))
+        agent_return_code = parse_agent_run(conduct_run(**run_params))
+        if agent_return_code != 0:
+            logger.error(f'Agent exited with code {agent_return_code} — run saved to DB as error')
+            sys.exit(1)
     except Exception as e:
         logger.error(f'Error encountered: {e}')
+        sys.exit(1)
 
     # patch phase (optional)
     if patch_enabled:

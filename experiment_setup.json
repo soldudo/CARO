@@ -3,5 +3,5 @@
     "container_name": "rootainer",
     "agent": "claude",
     "initial_prompt": true,
-    "patch_enabled": false
+    "patch_enabled": true
 }

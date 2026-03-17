@@ -10,7 +10,7 @@ N_WORKERS=4
 
 # ── IDs to run (updated by setup_experiment.py) ───────────────────────────────
 ARVO_IDS=(
-    388326072 42480816 42474728 42529650
+    42527008     42470158     42480782     42510687 
 )
 
 TOTAL=${#ARVO_IDS[@]}

@@ -86,12 +86,13 @@ def init_db():
 
 def parse_agent_run(run_path: Path):
     run_id = run_path.parent.name
-    session_start = agent_output = session_end = None
+    session_start = session_end = None
+    agent_output_events = []  # collects all individual agent events
     logger.debug(f'run_path: {run_path} exists: {run_path.exists()} is file: {run_path.is_file()}')
 
     if not run_path.exists() or not run_path.is_file():
         raise FileNotFoundError(f'The log file at {run_path} does not exist.')
-    
+
     logger.info(f'Parsing run log at {run_path}')
     with run_path.open('r', encoding='utf-8') as run_file:
         agent_log = run_file.read()
@@ -99,7 +100,7 @@ def parse_agent_run(run_path: Path):
         for raw_line in run_file:
             if not raw_line.strip():
                 continue
-            
+
             try:
                 line = json.loads(raw_line)
             except json.JSONDecodeError:
@@ -107,28 +108,31 @@ def parse_agent_run(run_path: Path):
                 continue
 
             log_type = line.get('log_type')
-            # stream_output only needed for early runs and can phase out
             if log_type in ("agent_output", "stream_output"):
-                agent_output = line
+                data = line.get('data')
+                # Old format: single line where data is the full event list
+                if isinstance(data, list):
+                    agent_output_events.extend(data)
+                # New format: one event dict per line
+                elif isinstance(data, dict):
+                    agent_output_events.append(data)
             elif log_type == "session_start":
                 session_start = line
             elif log_type == "session_end":
                 session_end = line
 
-    if not agent_output:
-        logger.critical(f'CRITICAL: agent log not found in run log. Exiting.')
-        raise ValueError(f'CRITICAL: agent log not found in run log. Exiting.') 
+    if not agent_output_events:
+        logger.critical(f'CRITICAL: no agent output found in run log.')
+        raise ValueError(f'CRITICAL: no agent output found in run log.')
 
     vuln_id = session_start.get('vuln')
-    # timestamp_unix = int(session_start.get('timestamp_unix'))
     timestamp_iso = session_start.get('timestamp_iso')
     duration = int(session_end.get('duration_seconds', 0))
     command_list = session_start.get('command')
-    # patch_url = session_start.get('patch_url')
     return_code = session_end.get('return_code')
 
-    # agent log is a list of json dicts
-    agent_trace = agent_output.get('data', [])
+    # Unified event list — works for both old and new Claude CLI formats
+    agent_trace = agent_output_events
 
     # running agent message narrative stored in this list
     assistant_event_list = []
@@ -141,6 +145,19 @@ def parse_agent_run(run_path: Path):
 
     agent_turn = 1
     agent_model = ''
+
+    # Initialize result fields — populated by 'result' event in the loop
+    session_id = ''
+    result_type = None
+    result_error_flag = None
+    result = None
+    stop_reason = None
+    total_cost_usd = None
+    num_turns = None
+    usage_dict = {}
+    model_usage_dict = {}
+    input_tokens = input_from_cache_tokens = input_written_to_cache_tokens = 0
+    input_total_tokens = output_tokens = total_tokens = 0
 
     logger.info('Parsing agent trace..')
     for event in agent_trace:
@@ -216,6 +233,9 @@ def parse_agent_run(run_path: Path):
             case 'result':
                 result_type = event.get('subtype')
                 result_error_flag = event.get('is_error')
+                # session_id may only appear here when there's no 'system' event
+                if not session_id:
+                    session_id = event.get('session_id', '')
 
                 total_cost_usd = event.get('total_cost_usd')
                 duration_ms = event.get('duration_ms')
@@ -285,6 +305,8 @@ def parse_agent_run(run_path: Path):
     finally:
         cursor.close()
         conn.close()
+
+    return return_code
 
 
 def parse_patch_run(patch_log_path: Path, run_id: str):

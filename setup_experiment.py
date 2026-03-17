@@ -17,6 +17,7 @@ CONFIG        = DIR / 'experiment_setup.json'
 MONITOR       = DIR / 'caro_monitor.sh'
 NOTIFY_CONFIG = DIR / 'notify_config.json'
 SYNCED_FILE   = DIR / 'synced_ids.json'
+LOCAL_CLAIMED = DIR / '.local_claimed.json'
 
 # ── ANSI colours ───────────────────────────────────────────────────────────────
 R='\033[0m'; B='\033[1m'; DIM='\033[2m'
@@ -54,6 +55,35 @@ def get_synced_ids():
         return set(json.loads(SYNCED_FILE.read_text()).get('claimed', []))
     except Exception:
         return set()
+
+def get_local_claimed():
+    """IDs this machine has claimed (may include unrun ones)."""
+    if not LOCAL_CLAIMED.exists():
+        return set()
+    try:
+        return set(json.loads(LOCAL_CLAIMED.read_text()).get('ids', []))
+    except Exception:
+        return set()
+
+def save_local_claimed(ids: set):
+    LOCAL_CLAIMED.write_text(json.dumps({'ids': sorted(ids)}, indent=2) + '\n')
+
+def release_claimed_ids(ids_to_release: list, max_retries: int = 3):
+    """Remove ids from synced_ids.json and push. Returns (success, message)."""
+    for _ in range(max_retries):
+        subprocess.run(['git', 'pull', '--rebase', '--autostash'],
+                       cwd=str(DIR), capture_output=True)
+        updated = sorted(get_synced_ids() - set(ids_to_release))
+        SYNCED_FILE.write_text(json.dumps({'claimed': updated}, indent=2) + '\n')
+        subprocess.run(['git', 'add', str(SYNCED_FILE)], cwd=str(DIR), capture_output=True)
+        subprocess.run(
+            ['git', 'commit', '-m', f'chore: release {len(ids_to_release)} ARVO IDs'],
+            cwd=str(DIR), capture_output=True
+        )
+        r = subprocess.run(['git', 'push'], cwd=str(DIR), capture_output=True, text=True)
+        if r.returncode == 0:
+            return True, r.stdout.strip()
+    return False, f'Push failed after {max_retries} attempts'
 
 def push_claimed_ids(new_ids: list, max_retries: int = 3):
     """Merge new_ids into synced_ids.json, commit and push. Returns (success, message)."""
@@ -116,18 +146,14 @@ def get_projects():
         rows = conn.execute("SELECT DISTINCT project FROM arvo ORDER BY project").fetchall()
     return [r['project'] for r in rows]
 
-def get_vulns(projects, exclude_ids, crash_log_filter):
+def get_vulns(projects, exclude_ids):
     placeholders = ','.join('?' * len(projects))
-    q = f"SELECT localId, project, crash_type, on_crash_log FROM arvo WHERE project IN ({placeholders})"
+    q = f"SELECT localId, project, crash_type FROM arvo WHERE project IN ({placeholders})"
     params = list(projects)
     if exclude_ids:
         ep = ','.join('?' * len(exclude_ids))
         q += f" AND localId NOT IN ({ep})"
         params += list(exclude_ids)
-    if crash_log_filter == '1':
-        q += " AND on_crash_log = 1"
-    elif crash_log_filter == '0':
-        q += " AND on_crash_log = 0"
     q += " ORDER BY project, localId"
     with get_conn() as conn:
         return conn.execute(q, params).fetchall()
@@ -169,6 +195,19 @@ def make_worker_config(worker_id):
     wpath.write_text(json.dumps(cfg, indent=4))
     return wpath
 
+# ── Worker status check ────────────────────────────────────────────────────────
+def worker_status():
+    """Return list of (name, running, config_exists) for each configured worker."""
+    n = get_monitor_workers()
+    out = []
+    for i in range(n):
+        name = f'rootainer-{i}'
+        cfg  = (DIR / f'experiment_setup_w{i}.json').exists()
+        r    = subprocess.run(['docker', 'ps', '-q', '-f', f'name=^{name}$'],
+                              capture_output=True, text=True)
+        out.append((name, bool(r.stdout.strip()), cfg))
+    return out
+
 # ── Worker / rootainer setup ───────────────────────────────────────────────────
 def docker_running(name):
     r = subprocess.run(['docker', 'ps', '-q', '-f', f'name=^{name}$'],
@@ -180,6 +219,67 @@ def docker_exists(name):
                        capture_output=True, text=True)
     return bool(r.stdout.strip())
 
+def docker_image_exists(name):
+    r = subprocess.run(['docker', 'images', '-q', name], capture_output=True, text=True)
+    return bool(r.stdout.strip())
+
+# ── First-time setup ───────────────────────────────────────────────────────────
+def first_time_setup():
+    header("First-Time Setup")
+
+    image_ok     = docker_image_exists('claude_dind')
+    container_ok = docker_running('rootainer')
+
+    print(f"\n  {'Step':<6}  {'Task':<35}  Status")
+    print(f"  {'─'*6}  {'─'*35}  {'─'*10}")
+    print(f"  {'1':<6}  {'Build claude_dind image':<35}  {c(GR,'✓ done') if image_ok else c(YL,'needed')}")
+    print(f"  {'2':<6}  {'Start rootainer container':<35}  {c(GR,'✓ running') if container_ok else c(YL,'needed')}")
+    print(f"  {'3':<6}  {'Authenticate Claude inside rootainer':<35}  {c(DIM,'(step 2 of worker setup)')}")
+    print()
+
+    # Step 1 — build image
+    if not image_ok:
+        print(f"  {c(B,'Step 1 — Build claude_dind image')}")
+        print(f"  {c(DIM,'Uses the Dockerfile in this repo.')}")
+        if confirm("  Build now? (takes ~1 min)"):
+            r = subprocess.run(['docker', 'build', '-t', 'claude_dind', str(DIR)],
+                               cwd=str(DIR))
+            if r.returncode != 0:
+                print(c(RD, "\n  ✗ Build failed. Fix errors above and retry."))
+                return
+            image_ok = True
+            print(c(GR, "  ✓ claude_dind image built"))
+        else:
+            print(f"\n  Run manually:  {c(CY, f'docker build -t claude_dind {DIR}')}")
+            return
+    else:
+        print(f"  {c(GR,'✓')} claude_dind image already exists — skipping build")
+
+    print()
+
+    # Step 2 — start rootainer
+    if not container_ok:
+        print(f"  {c(B,'Step 2 — Start rootainer container')}")
+        if docker_exists('rootainer'):
+            print(f"  {c(YL,'⚠')} Container exists but is stopped. Restarting...")
+            r = subprocess.run(['docker', 'start', 'rootainer'], capture_output=True, text=True)
+        else:
+            print(f"  {c(DIM,'Creating and starting rootainer...')}")
+            r = subprocess.run([
+                'docker', 'run', '--privileged', '--security-opt', 'label=disable',
+                '--name', 'rootainer', '-d', 'claude_dind'
+            ], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(c(RD, f"  ✗ Failed: {r.stderr.strip()}"))
+            return
+        print(c(GR, "  ✓ rootainer is running"))
+    else:
+        print(f"  {c(GR,'✓')} rootainer already running — skipping")
+
+    print()
+    print(c(GR, "  ✓ Prerequisites ready."))
+    print(f"  Next: {c(CY,'[4] Worker setup')} to authenticate Claude and create worker containers.")
+
 def setup_workers():
     header("Worker / rootainer Setup")
     n_workers = get_monitor_workers()
@@ -189,19 +289,32 @@ def setup_workers():
     n = int(prompt("How many parallel workers? (1–4)", str(n_workers)))
     n = max(1, min(4, n))
 
-    # Check base rootainer exists
-    if not docker_exists('rootainer'):
-        print(c(RD, "\n  ✗ 'rootainer' container not found. Build and start it first."))
+    # Check base rootainer exists — guide through first-time setup if not
+    if not docker_running('rootainer'):
+        print(c(YL, "\n  ⚠ 'rootainer' is not running. Running first-time setup..."))
+        first_time_setup()
+        if not docker_running('rootainer'):
+            return
+
+    # Claude auth check — must exist in rootainer
+    print(f"\n  {c(B,'Claude authentication')}")
+    print(f"  Workers inherit Claude auth from {c(CY,'rootainer')}.")
+    print(f"  If not yet authenticated, open a shell and run {c(CY,'claude')}:")
+    print(f"    {c(DIM,'docker exec -it rootainer bash')}")
+    if confirm("  Open interactive shell in rootainer to authenticate Claude now?"):
+        subprocess.run(['docker', 'exec', '-it', 'rootainer', 'bash'])
+        print(f"  {c(DIM,'(returned from shell)')}")
+    if not confirm("  Claude is authenticated in rootainer — ready to create workers?"):
+        print(c(YL, "  ⚠ Skipping worker setup — authenticate Claude first."))
         return
 
-    # Commit rootainer to image (preserves Claude auth)
-    print(f"\n  {c(DIM,'Committing rootainer → rootainer-auth image...')}")
-    r = subprocess.run(['docker', 'commit', 'rootainer', 'rootainer-auth'],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        print(c(RD, f"  ✗ Commit failed: {r.stderr.strip()}"))
-        return
-    print(c(GR, "  ✓ rootainer-auth image created"))
+    # Get the base image rootainer was started from
+    r_inspect = subprocess.run(
+        ['docker', 'inspect', 'rootainer', '--format', '{{.Config.Image}}'],
+        capture_output=True, text=True
+    )
+    base_image = r_inspect.stdout.strip() if r_inspect.returncode == 0 else 'claude_dind'
+    print(f"\n  {c(DIM, f'Base image: {base_image}')}")
 
     for i in range(n):
         name = f'rootainer-{i}'
@@ -213,7 +326,8 @@ def setup_workers():
             if docker_exists(name):
                 subprocess.run(['docker', 'rm', '-f', name], capture_output=True)
             r = subprocess.run(
-                ['docker', 'run', '--privileged', '--name', name, '-d', 'rootainer-auth'],
+                ['docker', 'run', '--privileged', '--security-opt', 'label=disable',
+                 '--name', name, '-d', base_image],
                 capture_output=True, text=True
             )
             if r.returncode == 0:
@@ -221,6 +335,28 @@ def setup_workers():
             else:
                 print(c(RD, f"  ✗ Failed to start: {r.stderr.strip()}"))
                 continue
+
+        # Wait briefly for Docker daemon inside container to be ready
+        import time
+        time.sleep(3)
+
+        # Copy Claude auth from rootainer via host temp files
+        # (docker cp between containers is not supported directly)
+        import tempfile, os
+        subprocess.run(['docker', 'exec', name, 'mkdir', '-p', '/root/.claude'],
+                       capture_output=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_tmp   = os.path.join(tmp, '.claude.json')
+            creds_tmp = os.path.join(tmp, '.credentials.json')
+            subprocess.run(['docker', 'cp', 'rootainer:/root/.claude.json', cfg_tmp],
+                           capture_output=True)
+            subprocess.run(['docker', 'cp', 'rootainer:/root/.claude/.credentials.json', creds_tmp],
+                           capture_output=True)
+            subprocess.run(['docker', 'cp', cfg_tmp, f'{name}:/root/.claude.json'],
+                           capture_output=True)
+            subprocess.run(['docker', 'cp', creds_tmp, f'{name}:/root/.claude/.credentials.json'],
+                           capture_output=True)
+        print(f"  {c(GR,'✓')} Claude auth copied")
 
         # Copy agent files
         for fname in ['memory_safety_agent.md', 'memory_safety_skills.md']:
@@ -316,44 +452,59 @@ def setup_batch():
     else:
         print(c(YL, f'⚠  Pull failed — working with local data only'))
 
+    # Offer to release locally claimed but unrun IDs
+    local_claimed = get_local_claimed()
+    unrun_claimed = local_claimed - already_run
+    if unrun_claimed:
+        print(f"\n  {c(YL,'⚠')} {len(unrun_claimed)} IDs claimed by this machine but not yet run:")
+        print(f"  {c(DIM, ', '.join(str(i) for i in sorted(unrun_claimed)))}")
+        if confirm("  Release them so other machines can pick them?"):
+            ok, msg = release_claimed_ids(list(unrun_claimed))
+            if ok:
+                save_local_claimed(local_claimed - unrun_claimed)
+                synced_ids = get_synced_ids()
+                print(c(GR, f"  ✓ Released {len(unrun_claimed)} IDs"))
+            else:
+                print(c(YL, f"  ⚠ Release failed: {msg}"))
+
     # 1. Exclude already-run?
     exclude = confirm(f"Exclude {len(already_run)} already-run IDs?")
 
     # 2. Projects
     all_projects = get_projects()
-    print(f"\n  {c(B,'Available projects:')}")
+    print(f"\n  {c(B,'Available projects:')}  (number, comma-list of names, or a for all)")
     for i, p in enumerate(all_projects, 1):
         print(f"    {c(CY,f'[{i}]')} {p}")
     print(f"    {c(CY,'[a]')} All")
-    sel = prompt("Select (e.g. 1,3 or a)", "a")
+    sel = prompt("Select", "a")
     if sel.lower() == 'a':
         chosen_projects = all_projects
     else:
-        idxs = [int(x.strip())-1 for x in sel.split(',') if x.strip().isdigit()]
-        chosen_projects = [all_projects[i] for i in idxs if 0 <= i < len(all_projects)]
+        chosen_projects = []
+        for tok in sel.split(','):
+            tok = tok.strip()
+            if tok.isdigit():
+                idx = int(tok) - 1
+                if 0 <= idx < len(all_projects):
+                    chosen_projects.append(all_projects[idx])
+            elif tok.lower() in [p.lower() for p in all_projects]:
+                match = next(p for p in all_projects if p.lower() == tok.lower())
+                chosen_projects.append(match)
+        if not chosen_projects:
+            chosen_projects = all_projects
     print(f"  {c(GR,'✓')} Projects: {', '.join(chosen_projects)}")
 
-    # 3. on_crash_log filter
-    print(f"\n  {c(B,'on_crash_log filter:')}")
-    print(f"    {c(CY,'[m]')} Mixed  {c(DIM,'← recommended')}")
-    print(f"    {c(CY,'[1]')} Only on_crash_log = 1")
-    print(f"    {c(CY,'[0]')} Only on_crash_log = 0")
-    crash_filter = prompt("Filter", "m").lower()
-    if crash_filter not in ('0', '1'):
-        crash_filter = 'mixed'
-
-    # 4. Random or manual
+    # 3. Random or manual
     print(f"\n  {c(B,'Selection mode:')}")
     print(f"    {c(CY,'[r]')} Random")
     print(f"    {c(CY,'[m]')} Manual — pick from list")
     mode = prompt("Mode", "r").lower()
 
     local_excluded = already_run if exclude else set()
-    # Always exclude synced IDs (claimed by any machine, running or done)
     exclude_ids = local_excluded | synced_ids
     if synced_ids - already_run:
-        print(f"  {c(DIM, f'+ {len(synced_ids - already_run)} IDs claimed by other machines also excluded')}")
-    pool = get_vulns(chosen_projects, exclude_ids, crash_filter if crash_filter != 'mixed' else 'any')
+        print(f"  {c(DIM, f'+ {len(synced_ids - already_run)} IDs claimed by other machines excluded')}")
+    pool = get_vulns(chosen_projects, exclude_ids)
 
     if not pool:
         print(c(RD, "\n  No vulnerabilities match filters."))
@@ -363,16 +514,7 @@ def setup_batch():
 
     if mode == 'r':
         n = int(prompt(f"How many? (pool: {len(pool)})", "20"))
-        if crash_filter == 'mixed':
-            with_log    = [r for r in pool if r['on_crash_log'] == 1]
-            without_log = [r for r in pool if r['on_crash_log'] == 0]
-            half = n // 2
-            sel1 = random.sample(with_log,    min(half, len(with_log)))
-            sel0 = random.sample(without_log, min(n - len(sel1), len(without_log)))
-            selected = sel1 + sel0
-            random.shuffle(selected)
-        else:
-            selected = random.sample(list(pool), min(n, len(pool)))
+        selected = random.sample(list(pool), min(n, len(pool)))
     else:
         pool_list = list(pool)
         PAGE, page, chosen_ids = 30, 0, set()
@@ -380,12 +522,12 @@ def setup_batch():
             start = page * PAGE
             chunk = pool_list[start:start+PAGE]
             print(f"\n  {c(B, f'Page {page+1} — {start+1}–{start+len(chunk)} of {len(pool_list)}')}")
-            print(f"  {'':5} {'ID':>11}  {'PROJECT':<10}  {'CRASH TYPE':<35}  LOG")
-            print(f"  {'─'*5} {'─'*11}  {'─'*10}  {'─'*35}  {'─'*3}")
+            print(f"  {'':5} {'ID':>11}  {'PROJECT':<10}  {'CRASH TYPE':<40}")
+            print(f"  {'─'*5} {'─'*11}  {'─'*10}  {'─'*40}")
             for i, r in enumerate(chunk):
                 mark = c(GR, ' ✓') if r['localId'] in chosen_ids else '  '
                 print(f"  {mark}{c(CY,f'[{start+i+1}]'):<14} {r['localId']:>11}  {r['project']:<10}  "
-                      f"{r['crash_type'][:35]:<35}  {r['on_crash_log']}")
+                      f"{r['crash_type'][:40]}")
             print(f"\n  Toggle numbers, {c(CY,'[n]')}ext, {c(CY,'[p]')}rev, {c(CY,'[d]')}one")
             cmd = prompt("").lower()
             if cmd == 'n':
@@ -416,20 +558,17 @@ def setup_batch():
     for proj, items in sorted(by_proj.items()):
         print(f"\n  {c(B, proj)} ({len(items)})")
         for r in items:
-            log_tag = c(GR,'[log=1]') if r['on_crash_log'] else c(DIM,'[log=0]')
-            print(f"    {r['localId']:>11}  {r['crash_type'][:40]:<40}  {log_tag}")
+            print(f"    {r['localId']:>11}  {r['crash_type'][:50]}")
 
-    log1 = sum(1 for r in selected if r['on_crash_log'])
-    print(f"\n  on_crash_log=1: {c(GR,log1)}   on_crash_log=0: {c(DIM,len(selected)-log1)}")
-    print(f"  Channel : {c(YL, ntfy_channel_str())}")
+    print(f"\n  Channel : {c(YL, ntfy_channel_str())}")
     print(f"  Workers : {c(YL, n_workers)}  (rootainer-0 … rootainer-{n_workers-1})")
 
     # Patch phase toggle
     cur_cfg = json.loads(CONFIG.read_text())
     cur_patch = cur_cfg.get('patch_enabled', False)
+    cur_patch_str = 'ON' if cur_patch else 'OFF'
     print(f"\n  {c(B,'Patch phase')} (fix bug after localization — one attempt):")
-    print(f"    {c(CY,'[y]')} Enable   {c(CY,'[n]')} Disable   "
-          f"{c(DIM, f'(currently: {\"ON\" if cur_patch else \"OFF\"}')})")
+    print(f"    {c(CY,'[y]')} Enable   {c(CY,'[n]')} Disable   {c(DIM, '(currently: ' + cur_patch_str + ')')}")
     patch_enabled = (prompt("Patch phase", "y" if cur_patch else "n").lower() == 'y')
     print(f"  Patch phase: {c(GR,'ENABLED') if patch_enabled else c(DIM,'DISABLED')}")
 
@@ -444,6 +583,9 @@ def setup_batch():
     ids = [r['localId'] for r in selected]
     save_monitor_ids(ids)
     print(c(GR, f"\n  ✓ {len(ids)} IDs written to caro_monitor.sh"))
+
+    # Track locally so we can release them if the run doesn't happen
+    save_local_claimed(get_local_claimed() | set(ids))
 
     # Push claimed IDs to GitHub BEFORE launching — blocks other machines from picking them
     print(f"  {c(DIM,'Pushing claimed IDs to GitHub...')} ", end='', flush=True)
@@ -461,13 +603,69 @@ def setup_batch():
             print(c(GR, f"  ✓ Created experiment_setup_w{i}.json"))
 
     if confirm("  Launch caro_monitor.sh now?"):
-        subprocess.Popen(['bash', str(MONITOR)], stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, cwd=str(DIR))
-        print(c(GR, "\n  ✓ Monitor launched."))
-        print(f"    tail:    {c(CY, f'tail -f {DIR}/monitor.log')}")
-        print(f"    channel: {c(YL, ntfy_channel_str())}\n")
+        print(c(GR, "\n  Starting monitor (Ctrl+C to abort)...\n"))
+        try:
+            subprocess.run(['bash', str(MONITOR)], cwd=str(DIR))
+        except KeyboardInterrupt:
+            print(c(YL, "\n  Monitor interrupted."))
+        print(f"\n  Monitor finished. Channel: {c(YL, ntfy_channel_str())}\n")
     else:
         print(f"\n  Run: {c(CY,'bash caro_monitor.sh')}\n")
+
+# ── Guided setup ──────────────────────────────────────────────────────────────
+def guided_setup():
+    """Step-by-step wizard: workers → notifications → batch → launch."""
+    header("Guided Setup  (step-by-step)")
+
+    # ── Step 0: Prerequisites ─────────────────────────────────────────────────
+    if not docker_image_exists('claude_dind') or not docker_running('rootainer'):
+        print(f"\n  {c(B,'Step 0/3 — Prerequisites (first-time setup)')}")
+        first_time_setup()
+        if not docker_running('rootainer'):
+            print(c(RD, "\n  ✗ rootainer not running — cannot continue."))
+            return
+
+    # ── Step 1: Workers ────────────────────────────────────────────────────────
+    print(f"\n  {c(B,'Step 1/3 — Worker containers')}")
+    statuses = worker_status()
+    n_workers = get_monitor_workers()
+    all_ready = all(running and cfg for _, running, cfg in statuses)
+
+    for name, running, cfg in statuses:
+        if running and cfg:
+            tag = c(GR, '✓ ready')
+        elif running and not cfg:
+            tag = c(YL, '⚠ running but config missing')
+        elif not running and cfg:
+            tag = c(YL, '⚠ config exists but container not running')
+        else:
+            tag = c(RD, '✗ not set up')
+        print(f"    {tag}  {c(CY, name)}")
+
+    if not all_ready:
+        print(c(YL, f"\n  ⚠ Some workers are not ready."))
+        if confirm("  Run worker setup now?"):
+            setup_workers()
+        else:
+            print(c(RD, "  Workers not set up — experiment may fail. Continuing anyway."))
+    else:
+        print(c(GR, f"\n  ✓ All {n_workers} workers ready"))
+
+    # ── Step 2: Notifications ─────────────────────────────────────────────────
+    print(f"\n  {c(B,'Step 2/3 — Notifications')}")
+    topic = load_notify_cfg().get('ntfy', {}).get('topic', '')
+    if topic:
+        print(f"  {c(GR,'✓')} Channel: {c(YL, ntfy_channel_str())}")
+        if confirm("  Send a test notification?"):
+            send_test_notification()
+    else:
+        print(f"  {c(YL,'⚠')} No ntfy topic configured.")
+        if confirm("  Configure notifications now?"):
+            setup_notifications()
+
+    # ── Step 3: Batch selection ───────────────────────────────────────────────
+    print(f"\n  {c(B,'Step 3/3 — Experiment batch')}")
+    setup_batch()
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
@@ -491,20 +689,28 @@ def main():
     while True:
         already = len(get_already_run())
         n_workers = get_monitor_workers()
+        ws = worker_status()
+        workers_ok = all(r and cfg for _, r, cfg in ws)
+        worker_tag = c(GR, f'{n_workers} ready') if workers_ok else c(YL, f'{n_workers} configured — check needed')
+
         print(f"\n  {c(B,'Menu')}")
+        print(f"    {c(GR,'[0]')} {c(B,'Guided setup')}  {c(DIM,'← start here')}")
         print(f"    {c(CY,'[1]')} Setup new batch")
         print(f"    {c(CY,'[2]')} View existing runs")
         print(f"    {c(CY,'[3]')} DB summary  ({already} already-run IDs)")
-        print(f"    {c(CY,'[4]')} Worker setup  ({n_workers} workers active)")
+        print(f"    {c(CY,'[4]')} Worker setup  ({worker_tag})")
         print(f"    {c(CY,'[5]')} Notification settings  [{c(YL, ntfy_channel_str())}]")
+        print(f"    {c(CY,'[6]')} First-time setup  {c(DIM,'(build image, start rootainer)')}")
         print(f"    {c(CY,'[q]')} Quit")
-        choice = prompt("").lower()
+        choice = prompt("", "0").lower()
 
-        if choice == '1':   setup_batch()
+        if choice == '0':   guided_setup()
+        elif choice == '1': setup_batch()
         elif choice == '2': view_runs()
         elif choice == '3': view_db_summary()
         elif choice == '4': setup_workers()
         elif choice == '5': setup_notifications()
+        elif choice == '6': first_time_setup()
         elif choice == 'q':
             print(f"\n  {c(DIM,'Bye.')}\n")
             sys.exit(0)

@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 from arvo_tools import standby_dind, cleanup_dind, strip_git_history
 from queries import get_original_crash_log
-from schema import RunParams
 import subprocess
 import time
 
@@ -92,15 +91,7 @@ def process_codex_event(event):
 # if flag is true, but id is none, last will be used
 # def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, agent: str, run_mode: str, is_resume: bool = False, resume_session_id: str =None):
 
-def conduct_run(run_params: RunParams):
-    vuln_id=run_params.vuln_id
-    run_id=run_params.run_id
-    agent=run_params.agent
-    run_mode=run_params.run_mode
-    prompt=run_params.prompt
-    is_resume=run_params.is_resume
-    resume_session_id=run_params.resume_session_id
-    container_name = 'rootainer' # hardcoded container name can be set here (moved from experiment_setup.json)
+def conduct_run(vuln_id, run_id, container_name, prompt, agent, resume_flag=False, resume_session_id=None, patch_url=None):
 
     # in case previous run crashed. Handle this better
     cleanup_dind('vulnscan', rootainer_name=container_name)
@@ -127,12 +118,10 @@ def conduct_run(run_params: RunParams):
 
     if (agent == 'claude'):
         agent_args = ['claude', '-p', prompt]
-        
-        # Handle resuming a previous session
-        if is_resume and resume_session_id:
+
+        if resume_flag and resume_session_id:
             agent_args += ['--resume', resume_session_id]
-        # resume previous session if no session_id passed
-        elif is_resume and not resume_session_id:
+        elif resume_flag and not resume_session_id:
             agent_args += ['--continue']
         agent_args += ['--output-format', 'json']
 
@@ -158,9 +147,8 @@ def conduct_run(run_params: RunParams):
             'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
             'timestamp_unix': start_time,
             'vuln': vuln_id,
-            'command': command,
-            'run_mode': run_mode,
-            'prompt': prompt
+            'patch_url': patch_url,
+            'command': command
         }
 
     with open(log_path, 'w', encoding='utf-8') as log_file:
