@@ -1,0 +1,14 @@
+{
+    "method": "ntfy",
+    "ntfy": {
+        "url": "https://ntfy.sh",
+        "topic": "uic-tamusa-experiment"
+    },
+    "smtp": {
+        "server": "smtp.gmail.com",
+        "port": 587,
+        "sender": "",
+        "password": "",
+        "recipient": ""
+    }
+}

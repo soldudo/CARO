@@ -124,8 +124,8 @@ def standby_container(container_name: str, vuln_id: int, fix_flag: str = 'vul'):
     logger.debug(f"Starting standby container {container_name}")
     run_command(stby_cmd)
 
-def standby_dind(container_name: str, vuln_id: int, fix_flag: str = 'vul'):
-    dind_cmd = ['docker', 'exec', 'rootainer']
+def standby_dind(container_name: str, vuln_id: int, fix_flag: str = 'vul', rootainer_name: str = 'rootainer'):
+    dind_cmd = ['docker', 'exec', rootainer_name]
     stby_cmd = ['docker', 'run', '-d',
                  '--name', container_name,
                  '--entrypoint', 'tail',
@@ -135,6 +135,26 @@ def standby_dind(container_name: str, vuln_id: int, fix_flag: str = 'vul'):
     logger.debug(f"Starting standby container in rootainer {container_name}")
     full_cmd = dind_cmd + stby_cmd
     run_command(full_cmd)
+
+
+def strip_git_history(vulnscan_name: str = 'vulnscan', rootainer_name: str = 'rootainer'):
+    """Remove all .git directories from the vulnscan container before the agent runs.
+
+    This prevents the agent from using git log / git show to trivially locate
+    the fix commit and cheat on localization. The working tree is left intact —
+    source files, binaries, and crash reproduction are unaffected.
+    """
+    cmd = [
+        'docker', 'exec', rootainer_name,
+        'docker', 'exec', vulnscan_name,
+        'sh', '-c',
+        'find / -maxdepth 8 -name ".git" -type d 2>/dev/null | xargs -r rm -rf'
+    ]
+    result = run_command(cmd, check=False)
+    if result.returncode == 0:
+        logger.info(f"[{rootainer_name}] Git history stripped from {vulnscan_name}")
+    else:
+        logger.warning(f"[{rootainer_name}] Git strip returned non-zero ({result.returncode}) — container may lack git repos")
 
 
 

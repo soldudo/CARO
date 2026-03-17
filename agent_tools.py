@@ -2,7 +2,7 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
-from arvo_tools import standby_dind, cleanup_dind
+from arvo_tools import standby_dind, cleanup_dind, strip_git_history
 from queries import get_original_crash_log
 from schema import RunParams
 import subprocess
@@ -103,14 +103,18 @@ def conduct_run(run_params: RunParams):
     container_name = 'rootainer' # hardcoded container name can be set here (moved from experiment_setup.json)
 
     # in case previous run crashed. Handle this better
-    cleanup_dind('vulnscan')
+    cleanup_dind('vulnscan', rootainer_name=container_name)
 
-    standby_dind(container_name='vulnscan', vuln_id=run_params.vuln_id)
+    standby_dind(container_name='vulnscan', vuln_id=vuln_id, rootainer_name=container_name)
+
+    # Strip git history before the agent starts — prevents it from finding
+    # the fix commit via `git log` or `git show` (would trivialize localization).
+    strip_git_history(vulnscan_name='vulnscan', rootainer_name=container_name)
 
     # TODO: Add robust handling & failsafe of crash_log copy to container
     crash_log_original = get_original_crash_log(vuln_id)
 
-    copy_crash_cmd = ['docker', 'exec', '-i', 'rootainer', 'sh', '-c', 'cat > opt/agent/crash.log']
+    copy_crash_cmd = ['docker', 'exec', '-i', container_name, 'sh', '-c', 'cat > opt/agent/crash.log']
     process = subprocess.Popen(
         copy_crash_cmd,
         stdin=subprocess.PIPE,
@@ -256,6 +260,115 @@ def conduct_run(run_params: RunParams):
                 agent_log = ''
 
             # wipe arvo container in rootainer
-            cleanup_dind('vulnscan')
+            cleanup_dind('vulnscan', rootainer_name=container_name)
+
+    return log_path
+
+
+def conduct_patch_run(run_id: str, session_id: str, container_name: str, vuln_id: str, patch_prompt: str, patch_url: str = None):
+    """Resume the localization session and prompt the model to patch the bug.
+
+    Starts a fresh vulnscan (localization already cleaned it up), resumes the
+    claude session, and logs output to patch_{run_id}.log.
+    """
+    # Start fresh vulnscan — model needs source files + arvo harness to compile/test
+    standby_dind(container_name='vulnscan', vuln_id=vuln_id, rootainer_name=container_name)
+    strip_git_history(vulnscan_name='vulnscan', rootainer_name=container_name)
+
+    # Copy crash log so model can reference it during verification
+    crash_log_original = get_original_crash_log(vuln_id)
+    if crash_log_original:
+        copy_cmd = ['docker', 'exec', '-i', container_name, 'sh', '-c', 'cat > opt/agent/crash.log']
+        proc = subprocess.Popen(copy_cmd, stdin=subprocess.PIPE, text=True)
+        proc.communicate(input=crash_log_original)
+        if proc.returncode == 0:
+            logger.info("Crash log copied for patch run.")
+
+    # Resume the localization session with the patch prompt
+    agent_args = ['claude', '-p', patch_prompt, '--resume', session_id, '--output-format', 'json']
+    command = ['docker', 'exec', container_name] + agent_args
+
+    log_path = Path(__file__).parent / 'runs' / run_id / f'patch_{run_id}.log'
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f'Patch run logging to {log_path}')
+    logger.info(f'Invoking patch agent: {command}')
+
+    start_time = int(time.time())
+    duration = 0
+    return_code = None
+
+    with open(log_path, 'w', encoding='utf-8') as log_file:
+        log_file.write(json.dumps({
+            'log_type': 'session_start',
+            'timestamp_iso': datetime.now().isoformat(),
+            'timestamp_unix': start_time,
+            'vuln': vuln_id,
+            'patch_url': patch_url,
+            'command': command
+        }) + '\n')
+        log_file.flush()
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+
+        try:
+            for line in process.stdout:
+                line = line.rstrip('\n')
+                if not line.strip():
+                    continue
+                log_entry = {
+                    'log_type': 'agent_output',
+                    'timestamp_iso': datetime.now().isoformat(),
+                    'timestamp_unix': time.time(),
+                    'data': None
+                }
+                try:
+                    log_entry['data'] = json.loads(line)
+                except Exception:
+                    log_entry['data'] = {'raw_text': line}
+                log_file.write(json.dumps(log_entry) + '\n')
+                log_file.flush()
+
+            return_code = process.wait()
+            end_time = time.time()
+            duration = end_time - start_time
+            logger.info(f'Patch run completed: return_code={return_code}, duration={duration:.2f}s')
+
+            stderr_output = process.stderr.read()
+            if stderr_output:
+                logger.warning(f'Patch stderr: {stderr_output[:500]}')
+                log_file.write(json.dumps({
+                    'log_type': 'stderr_output',
+                    'timestamp_iso': datetime.now().isoformat(),
+                    'timestamp_unix': time.time(),
+                    'data': stderr_output
+                }) + '\n')
+
+        except Exception as e:
+            logger.error(f'Error during patch run: {e}')
+            log_file.write(json.dumps({
+                'log_type': 'execution_error',
+                'timestamp_iso': datetime.now().isoformat(),
+                'timestamp_unix': time.time(),
+                'data': str(e)
+            }) + '\n')
+            raise
+
+        finally:
+            log_file.write(json.dumps({
+                'log_type': 'session_end',
+                'timestamp_iso': datetime.now().isoformat(),
+                'timestamp_unix': time.time(),
+                'duration_seconds': duration,
+                'return_code': return_code
+            }) + '\n')
+            logger.info(f'Patch log saved to {log_path}')
+            cleanup_dind('vulnscan', rootainer_name=container_name)
 
     return log_path

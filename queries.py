@@ -276,6 +276,39 @@ def get_original_crash_log(arvo_id: int):
         conn.close()
 
 
+def get_session_id(run_id: str) -> Optional[str]:
+    conn = _get_connection()
+    try:
+        cursor = conn.execute('SELECT session_id FROM runs WHERE run_id = ?', (run_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except sqlite3.Error as e:
+        logger.error(f'db error retrieving session_id for {run_id}: {e}')
+        return None
+    finally:
+        conn.close()
+
+
+def update_patch_result(run_id: str, patch_diff: str, patch_result: str, patch_log: str):
+    conn = _get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            UPDATE runs SET patch_diff = ?, patch_result = ?, patch_log = ?
+            WHERE run_id = ?
+        ''', (patch_diff, patch_result, patch_log, run_id))
+        if cursor.rowcount == 0:
+            logger.error(f"No run found with ID {run_id}. Patch data not saved.")
+        else:
+            logger.info(f"Patch data stored for run {run_id}: result={patch_result}")
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Database error updating patch for run_id {run_id}: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def get_resume_id(run_id: str, conn: Optional[sqlite3.Connection] = None):
     should_close = False
     if conn is None:

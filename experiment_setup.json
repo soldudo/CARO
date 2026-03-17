@@ -1,9 +1,7 @@
 {
-    "arvo_id": 42531212,
+    "arvo_id": 42521453,
+    "container_name": "rootainer",
     "agent": "claude",
-    "is_loc_mode": true,
-    "is_patch_mode": false,
-    "loc_run_id": "",
-    "is_resume": false,
-    "resume_id": ""
+    "initial_prompt": true,
+    "patch_enabled": false
 }

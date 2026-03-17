@@ -44,9 +44,19 @@ def init_db():
                 command TEXT,
                 agent_log TEXT,
                 caro_log TEXT,
+                patch_diff TEXT,
+                patch_result TEXT,
+                patch_log TEXT,
                 FOREIGN KEY (vuln_id) REFERENCES arvo(localId)
             )
         ''')
+
+        # Migration: add patch columns to existing databases
+        for col, defn in [('patch_diff', 'TEXT'), ('patch_result', 'TEXT'), ('patch_log', 'TEXT')]:
+            try:
+                cursor.execute(f'ALTER TABLE runs ADD COLUMN {col} {defn}')
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
         # Table for File Changes (One-to-Many relationship with runs)
         cursor.execute('''CREATE TABLE IF NOT EXISTS run_events (
@@ -272,6 +282,81 @@ def parse_agent_run(run_path: Path):
     except sqlite3.IntegrityError as e:
         logger.error(f"DB Error: {e}")
 
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def parse_patch_run(patch_log_path: Path, run_id: str):
+    """Parse a patch phase log and store diff + result in the DB."""
+    if not patch_log_path.exists() or not patch_log_path.is_file():
+        logger.error(f'Patch log not found: {patch_log_path}')
+        return
+
+    logger.info(f'Parsing patch log at {patch_log_path}')
+    with patch_log_path.open('r', encoding='utf-8') as f:
+        patch_log = f.read()
+
+    diff_pattern = re.compile(r'```diff\s*(.*?)\s*```', re.DOTALL)
+    patch_diff = ''
+    patch_result = 'UNKNOWN'
+
+    for raw_line in patch_log.splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            line = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+
+        if line.get('log_type') not in ('agent_output', 'stream_output'):
+            continue
+
+        event = line.get('data', {})
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get('type')
+
+        if event_type == 'assistant':
+            for block in event.get('message', {}).get('content', []):
+                if block.get('type') != 'text':
+                    continue
+                text = block.get('text', '')
+                if not patch_diff:
+                    m = diff_pattern.search(text)
+                    if m:
+                        patch_diff = m.group(1).strip()
+                # NOT_PATCHED takes precedence — check it first
+                if 'NOT_PATCHED' in text:
+                    patch_result = 'NOT_PATCHED'
+                elif 'PATCHED' in text and patch_result == 'UNKNOWN':
+                    patch_result = 'PATCHED'
+
+        elif event_type == 'result':
+            result_text = event.get('result', '')
+            if 'NOT_PATCHED' in result_text:
+                patch_result = 'NOT_PATCHED'
+            elif 'PATCHED' in result_text and patch_result == 'UNKNOWN':
+                patch_result = 'PATCHED'
+
+    logger.info(f'Patch parse complete: result={patch_result}, diff_len={len(patch_diff)}')
+
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            UPDATE runs SET patch_diff = ?, patch_result = ?, patch_log = ?
+            WHERE run_id = ?
+        ''', (patch_diff or None, patch_result, patch_log, run_id))
+        if cursor.rowcount == 0:
+            logger.error(f'No run found with id {run_id} for patch update')
+        else:
+            logger.info(f'Patch data stored for run {run_id}')
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f'DB error storing patch data for {run_id}: {e}')
     finally:
         cursor.close()
         conn.close()
