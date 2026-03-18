@@ -16,10 +16,16 @@ def init_db():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS runs (
                 run_id TEXT PRIMARY KEY,
+                       
+                run_mode TEXT NOT NULL,
+                       
                 vuln_id INTEGER NOT NULL,
                 timestamp TEXT,
                 agent TEXT,
                 agent_model TEXT,
+                       
+                prompt TEXT,
+                       
                 result TEXT,
                 result_json TEXT,
                 agent_thought_log TEXT,
@@ -48,7 +54,14 @@ def init_db():
             )
         ''')
 
-        # Table for File Changes (One-to-Many relationship with runs)
+    #     cursor.execute('''ALTER TABLE runs ADD COLUMN run_mode TEXT NOT NULL DEFAULT 'loc'
+    # CHECK (run_mode IN ('loc', 'patch'));
+    #                    ''')
+        
+        # cursor.execute('''ALTER TABLE runs ADD COLUMN prompt TEXT
+        # ''')
+
+        # Table for agent messages during run
         cursor.execute('''CREATE TABLE IF NOT EXISTS run_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
@@ -59,14 +72,13 @@ def init_db():
             FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS run_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL,
-                       event_num INTEGER,
-                       event_type TEXT,
-                       event_text TEXT,
-                       event_usage TEXT,
-            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+        # table for patch info and results
+        cursor.execute('''CREATE TABLE IF NOT EXISTS patch_data (
+            run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+            experiment_tag TEXT,
+            loc_source TEXT,
+            is_crash_resolved BOOLEAN,
+            patch_crash_log TEXT            
         )''')
 
         conn.commit()
@@ -109,7 +121,14 @@ def parse_agent_run(run_path: Path):
         logger.critical(f'CRITICAL: agent log not found in run log. Exiting.')
         raise ValueError(f'CRITICAL: agent log not found in run log. Exiting.') 
 
+    run_mode = session_start.get('run_mode')
+
     vuln_id = session_start.get('vuln')
+
+    prompt = session_start.get('prompt')
+
+    loc_run_id = session_start.get('loc_run_id')
+
     # timestamp_unix = int(session_start.get('timestamp_unix'))
     timestamp_iso = session_start.get('timestamp_iso')
     duration = int(session_end.get('duration_seconds', 0))
@@ -194,8 +213,6 @@ def parse_agent_run(run_path: Path):
                     assistant_event_list.append(assistant_event)
                     agent_turn += 1
 
-
-
             # cases below should only update once each run
             case 'system':
                 logger.debug('Processing system event')
@@ -236,31 +253,40 @@ def parse_agent_run(run_path: Path):
     command = " ".join(command_list)
 
     # Send data to database
+
     try:
         init_db()
 
         conn = sqlite3.connect(DB_PATH)
         conn.execute("PRAGMA foreign_keys = ON") 
         cursor = conn.cursor()
-        placeholders = ", ".join(["?"] * 27)
+        placeholders = ", ".join(["?"] * 29)
         cursor.execute(f'''
             INSERT INTO runs (
-                run_id, vuln_id, timestamp, agent, agent_model,
-                result, result_json, agent_thought_log, agent_insight_log,
-                duration, total_cost_usd, num_turns, input_total_tokens, output_tokens,
-                total_tokens, input_tokens, input_from_cache_tokens, input_written_to_cache_tokens, 
-                usage_dict, model_usage_dict, result_type, result_error_flag, stop_reason, return_code,
-                session_id, command, agent_log
+                run_id, run_mode,
+                vuln_id, timestamp, agent, agent_model, prompt,
+                result, result_json, agent_thought_log, agent_insight_log, duration,
+                total_cost_usd, num_turns, input_total_tokens, output_tokens, total_tokens,
+                input_tokens, input_from_cache_tokens, input_written_to_cache_tokens, usage_dict, model_usage_dict,
+                result_type, result_error_flag, stop_reason, return_code, session_id,
+                command, agent_log
             ) VALUES ({placeholders})
         ''', (
-            run_id, vuln_id, timestamp_iso, 'claude', agent_model,
-            result, json.dumps(result_json), agent_thought_log, agent_insight_log,
-            duration, total_cost_usd, num_turns, input_total_tokens, output_tokens,
-            total_tokens, input_tokens, input_from_cache_tokens, input_written_to_cache_tokens,
-            json.dumps(usage_dict) if usage_dict else None, json.dumps(model_usage_dict) if model_usage_dict else None, 
-            result_type, result_error_flag, stop_reason, return_code,
-            session_id, command, agent_log
+            run_id, run_mode,
+            vuln_id, timestamp_iso, 'claude', agent_model, prompt,
+            result, json.dumps(result_json), agent_thought_log, agent_insight_log, duration,
+            total_cost_usd, num_turns, input_total_tokens, output_tokens, total_tokens,
+            input_tokens, input_from_cache_tokens, input_written_to_cache_tokens, json.dumps(usage_dict) if usage_dict else None, json.dumps(model_usage_dict) if model_usage_dict else None,
+            result_type, result_error_flag, stop_reason, return_code, session_id,
+            command, agent_log
         ))
+
+        # cursor.execute('''
+        #     ALTER TABLE runs ADD COLUMN run_mode TEXT NOT NULL DEFAULT 'loc'
+        #     CHECK (run_type IN ('loc', 'patch'));
+        # ''')
+        
+        
 
         for event in assistant_event_list:
             cursor.execute('''
@@ -268,7 +294,14 @@ def parse_agent_run(run_path: Path):
                 VALUES (?, ?, ?, ?, ?)
             ''', (run_id, event.get('turn'), event.get('type'), event.get('text'), json.dumps(event.get('usage', {}))))
 
+        if run_mode == 'patch':
+            cursor.execute(f'''
+                INSERT INTO patch_data (run_id, loc_source)
+                    VALUES (?, ?)
+            ''', (run_id, loc_run_id))
+
         conn.commit()
+            
     except sqlite3.IntegrityError as e:
         logger.error(f"DB Error: {e}")
 

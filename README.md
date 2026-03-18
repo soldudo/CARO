@@ -2,6 +2,14 @@
 
 **CARO** localization branch readme
 ## Updates
+
+### 2026-03-18
+* Full localization, patching and logging cycle operational.
+* Patch markdown files added - copy patch_agent/skill.md to rootainer/opt/agent
+* run_parser updated and now sends patch runs to db
+* patch_data - new table holds patch run_id, localization source (loc_run_id) and has a column to log if patch resolved crash (and patch crash output)
+* run parameters now back to dictionary to support rootainer workers
+
 ### 2026-03-16 
 * caro and conduct_run updated to handle patch runs
 * run parameters now handled in a new dataclass designed for the updated experiment

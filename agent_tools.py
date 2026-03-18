@@ -92,20 +92,20 @@ def process_codex_event(event):
 # if flag is true, but id is none, last will be used
 # def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, agent: str, run_mode: str, is_resume: bool = False, resume_session_id: str =None):
 
-def conduct_run(run_params: RunParams):
-    vuln_id=run_params.vuln_id
-    run_id=run_params.run_id
-    agent=run_params.agent
-    run_mode=run_params.run_mode
-    prompt=run_params.prompt
-    is_resume=run_params.is_resume
-    resume_session_id=run_params.resume_session_id
-    container_name = 'rootainer' # hardcoded container name can be set here (moved from experiment_setup.json)
+def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode, loc_run_id=None, is_resume=False, resume_session_id=None):
+    # vuln_id=run_params.vuln_id
+    # run_id=run_params.run_id
+    # agent=run_params.agent
+    # run_mode=run_params.run_mode
+    # loc_run_id=run_params.loc_run_id
+    # prompt=run_params.prompt
+    # is_resume=run_params.is_resume
+    # resume_session_id=run_params.resume_session_id
 
     # in case previous run crashed. Handle this better
     cleanup_dind('vulnscan')
 
-    standby_dind(container_name='vulnscan', vuln_id=run_params.vuln_id)
+    standby_dind(container_name='vulnscan', vuln_id=vuln_id)
 
     # TODO: Add robust handling & failsafe of crash_log copy to container
     crash_log_original = get_original_crash_log(vuln_id)
@@ -156,6 +156,7 @@ def conduct_run(run_params: RunParams):
             'vuln': vuln_id,
             'command': command,
             'run_mode': run_mode,
+            'loc_run_id': loc_run_id,
             'prompt': prompt
         }
 

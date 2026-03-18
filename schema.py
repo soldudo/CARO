@@ -13,6 +13,7 @@ class RunParams:
     run_id: str
     agent: str
     run_mode: str
+    loc_run_id: str
     prompt: str
     is_resume: bool = False
     resume_session_id: Optional[str] = None

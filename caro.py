@@ -1,3 +1,4 @@
+import argparse
 import logging
 import json
 import os
@@ -48,6 +49,7 @@ if __name__ == "__main__":
 
     experiment_params = load_config()
     vuln_id = experiment_params.get('arvo_id')
+    container_name = experiment_params.get('container_name', 'rootainer')
     agent = experiment_params.get('agent', 'claude')
     is_loc_mode = experiment_params.get('is_loc_mode', True)
     is_patch_mode = experiment_params.get('is_patch_mode', False)
@@ -99,9 +101,14 @@ if __name__ == "__main__":
         # If fetched vuln_id does not match experiment's vuln_id 
         elif db_loc_result[1] != vuln_id:
             loc_error_msg = f'Provided run_id {loc_run_id} fetched vuln_id: {db_loc_result[1]} which does not match experiment\'s vuln_id: {vuln_id}'
+        
+        # Found valid context
         else:
             is_context_valid = True
-            loc_context = db_loc_result[0]
+            loc_context = json.loads(db_loc_result[0])
+            # remove confidence scores (arbitrary and we're not asking for related behavior)
+            for vuln in loc_context["vulnerabilities"]:
+                vuln.pop("confidence_score", None)
 
         if not is_context_valid:
             logger.error(f'Localization context ERROR: {loc_error_msg}')
@@ -128,57 +135,108 @@ if __name__ == "__main__":
                 # ensure any subsequent patching run doesn't try to continue the used resume session
                 is_resume = False
 
-            loc_run_params = RunParams(
-                vuln_id=vuln_id,
-                run_id=run_id + '-loc',
-                agent=agent,
-                run_mode= 'loc', # default localization mode
-                prompt=prompt,
-                is_resume=is_resume,
-                resume_session_id=resume_id
-            )
+            current_loc_run_id = run_id + '-loc'
+
+            loc_run_params = {
+                "vuln_id": vuln_id,
+                "run_id": current_loc_run_id,
+                "container_name": container_name,
+                "prompt": prompt,
+                "agent": agent,
+                "run_mode": 'loc',
+                "is_resume": is_resume,
+                "resume_session_id": resume_id,
+            }
+            # loc_run_params = RunParams(
+            #     vuln_id=vuln_id,
+            #     run_id=current_loc_run_id,
+            #     agent=agent,
+            #     run_mode= 'loc', # default localization mode
+            #     prompt=prompt,
+            #     is_resume=is_resume,
+            #     resume_session_id=resume_id
+            # )
 
             logger.debug(f'Conducting localization run with parameters: {loc_run_params}')
 
             try:
                 # TODO Update tables and parse_run to handle loc & patch runs
-                parse_agent_run(conduct_run(loc_run_params))
+                parse_agent_run(conduct_run(**loc_run_params))
                 
                 logger.info('######### CARO Localization Run Complete #########')
 
                 # TODO Update loc_run caro_log
                 # add loc/patch parameter to specify the table to update
-                update_caro_log(run_id=loc_run_params.run_id, caro_log_path=str(caro_log_path))
+                update_caro_log(run_id=current_loc_run_id, caro_log_path=str(caro_log_path))
 
             except Exception as e:
                 logger.error(f'Error encountered: {e}')
 
     # patching run
     if is_patch_mode:
+
         if not is_resume:
+            if not loc_context:
+                current_loc_result = get_localization(current_loc_run_id)
+                if current_loc_result:
+                        loc_context = json.loads(current_loc_result[0])
+                        loc_run_id = current_loc_run_id
+            # remove confidence scores (arbitrary and we're not asking for related behavior)
+            for vuln in loc_context.get('vulnerabilities', []):
+                vuln.pop("confidence_score", None)
+                prompt = f'Investigate the memory safety vulnerability causing the crash [{crash_type}] in the {project} project as shown in the opt/agent/crash.log file. Please initialize your environment using the opt/agent/memory_safety_agent.md persona. Use the patterns and checklist provided in the opt/agent/memory_safety_skills.md file. Localize the source causing this crash by providing the relevant files, functions and lines.'
+
             # Add patching prompt here
-            prompt = f''
+            prompt = f'''Fix the root cause of the memory safety vulnerability causing the crash [{crash_type}] in the {project} project. The crash log can be found at opt/agent/crash.log.
+            The following JSON contains localized vulnerability findings.
+
+            {json.dumps(loc_context, indent=2)}
+            
+            For each entry in the vulnerabilities array:
+            1. Read the cited file and examine the specified lines
+            2. Apply a minimal fix addressing the root cause in the summary
+            3. If the summary references a correctly-handled parallel code path, mirror that approach
+
+            Produce a separate .diff per file. Do not combine fixes across 
+            different files.
+
+            Please initialize your environment using the opt/agent/patch_agent.md persona. Use the patterns provided in the opt/agent/patch_skills.md file.
+            '''
         else:
             prompt = 'continue where you left off'
         
-        patch_run_prams = RunParams(
 
-            vuln_id=vuln_id,
-            run_id = run_id + '-patch',
-            agent=agent,
-            run_mode = 'patch',
-            prompt=prompt,
-            is_resume=is_resume,
-            resume_session_id=resume_id
-        )
+        # patch_run_prams = RunParams(
+
+        #     vuln_id=vuln_id,
+        #     run_id = run_id + '-patch',
+        #     agent=agent,
+        #     run_mode = 'patch',
+        #     loc_run_id=loc_run_id,
+        #     prompt=prompt,
+        #     is_resume=is_resume,
+        #     resume_session_id=resume_id
+        # )
+
+        patch_run_prams = {
+            "vuln_id": vuln_id,
+            "run_id": run_id + '-patch',
+            "container_name": container_name,
+            "prompt": prompt,
+            "agent": agent,
+            "run_mode": 'patch',
+            "loc_run_id": loc_run_id,
+            "is_resume": is_resume,
+            "resume_session_id": resume_id,
+        }
 
         logger.debug(f'Conducting patching run with parameters: {patch_run_prams}')
 
         try:
-            parse_agent_run(conduct_run(patch_run_prams))
+            parse_agent_run(conduct_run(**patch_run_prams))
 
             logger.info('######### CARO Patch Run Complete #########')
-            update_caro_log(run_id=patch_run_prams.run_id, caro_log_path=str(caro_log_path))
+            update_caro_log(run_id=run_id + '-patch', caro_log_path=str(caro_log_path))
 
         except Exception as e:
             logger.error(f'Error encountered: {e}')
