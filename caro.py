@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 import time
 from queries import get_context, update_caro_log, get_localization
-from schema  import RunParams
 from agent_tools import conduct_run
 from run_parser import parse_agent_run
 
@@ -20,9 +19,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def load_config():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(base_dir, 'experiment_setup.json')
+def load_config(config_path=None):
+    if config_path is None:
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(base_dir, 'experiment_setup.json')
 
     if not os.path.exists(config_path):
         logger.critical(f"Config file not found at {config_path}")
@@ -41,13 +42,16 @@ def load_config():
         sys.exit(1)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default=None, help='Path to experiment config JSON')
+    args = parser.parse_args()
     patch_url = None
     logger.info('######### Starting CARO Experiment Run #########')
     
     caro_dir = Path(__file__).parent
     caro_log_path = caro_dir / 'caro.log'
 
-    experiment_params = load_config()
+    experiment_params = load_config(args.config)
     vuln_id = experiment_params.get('arvo_id')
     container_name = experiment_params.get('container_name', 'rootainer')
     agent = experiment_params.get('agent', 'claude')
@@ -91,6 +95,7 @@ if __name__ == "__main__":
     # get localization context from db if patching enabled and previous run_id entered
     loc_context = None
     if is_patch_mode and loc_run_id:
+
         db_loc_result = get_localization(loc_run_id)
 
         is_context_valid = False
@@ -102,13 +107,15 @@ if __name__ == "__main__":
         elif db_loc_result[1] != vuln_id:
             loc_error_msg = f'Provided run_id {loc_run_id} fetched vuln_id: {db_loc_result[1]} which does not match experiment\'s vuln_id: {vuln_id}'
         
-        # Found valid context
         else:
-            is_context_valid = True
             loc_context = json.loads(db_loc_result[0])
-            # remove confidence scores (arbitrary and we're not asking for related behavior)
-            for vuln in loc_context["vulnerabilities"]:
-                vuln.pop("confidence_score", None)
+            loc_error_msg = f'Localization result for DB run_id {loc_run_id} is empty.'
+            if loc_context:
+                # Found valid context
+                is_context_valid = True
+                # remove confidence scores (arbitrary and we're not asking for related behavior)
+                for vuln in loc_context.get("vulnerabilities", []):
+                    vuln.pop("confidence_score", None)
 
         if not is_context_valid:
             logger.error(f'Localization context ERROR: {loc_error_msg}')
