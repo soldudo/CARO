@@ -120,6 +120,8 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
         logger.critical(f'CRITICAL: no agent output found in run log.')
         raise ValueError(f'CRITICAL: no agent output found in run log.')
 
+    run_mode = session_start.get('run_mode')
+
     vuln_id = session_start.get('vuln')
     timestamp_iso = session_start.get('timestamp_iso')
     duration = int(session_end.get('duration_seconds', 0))
@@ -221,8 +223,6 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
                     assistant_event_list.append(assistant_event)
                     agent_turn += 1
 
-
-
             # cases below should only update once each run
             case 'system':
                 logger.debug('Processing system event')
@@ -266,6 +266,7 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
     command = " ".join(command_list)
 
     # Send data to database
+
     try:
         init_db()
 
@@ -292,6 +293,13 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
             session_id, command, agent_log
         ))
 
+        # cursor.execute('''
+        #     ALTER TABLE runs ADD COLUMN run_mode TEXT NOT NULL DEFAULT 'loc'
+        #     CHECK (run_type IN ('loc', 'patch'));
+        # ''')
+        
+        
+
         for event in assistant_event_list:
             cursor.execute('''
                 INSERT INTO run_events (run_id, event_num, event_type, event_text, event_usage)
@@ -304,6 +312,7 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
             ''', (run_id, loc_run_id))
 
         conn.commit()
+            
     except sqlite3.IntegrityError as e:
         logger.error(f"DB Error: {e}")
 
