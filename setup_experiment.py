@@ -191,6 +191,14 @@ def make_worker_config(worker_id):
     """Create experiment_setup_w{id}.json for a given worker."""
     cfg = json.loads(CONFIG.read_text())
     cfg['container_name'] = f'rootainer-{worker_id}'
+    # Ensure new schema keys, strip legacy ones
+    cfg.setdefault('is_loc_mode', True)
+    cfg.setdefault('is_patch_mode', False)
+    cfg.setdefault('loc_run_id', '')
+    cfg.setdefault('is_resume', False)
+    cfg.setdefault('resume_id', '')
+    for old_key in ('patch_enabled', 'initial_prompt', 'resume_flag'):
+        cfg.pop(old_key, None)
     wpath = DIR / f'experiment_setup_w{worker_id}.json'
     wpath.write_text(json.dumps(cfg, indent=4))
     return wpath
@@ -564,24 +572,50 @@ def setup_batch():
     print(f"\n  Channel : {c(YL, ntfy_channel_str())}")
     print(f"  Workers : {c(YL, n_workers)}  (rootainer-0 … rootainer-{n_workers-1})")
 
-    # Patch phase toggle
+    # Run mode selection
     cur_cfg = json.loads(CONFIG.read_text())
+    cur_loc   = cur_cfg.get('is_loc_mode', True)
     cur_patch = cur_cfg.get('is_patch_mode', False)
-    cur_patch_str = 'ON' if cur_patch else 'OFF'
-    print(f"\n  {c(B,'Patch phase')} (fix bug after localization — fresh patch agent run):")
-    print(f"    {c(CY,'[y]')} Enable   {c(CY,'[n]')} Disable   {c(DIM, '(currently: ' + cur_patch_str + ')')}")
-    patch_enabled = (prompt("Patch phase", "y" if cur_patch else "n").lower() == 'y')
-    print(f"  Patch phase: {c(GR,'ENABLED') if patch_enabled else c(DIM,'DISABLED')}")
+    if cur_loc and cur_patch:   cur_mode_str = 'both'
+    elif cur_patch:             cur_mode_str = 'patch only'
+    else:                       cur_mode_str = 'loc only'
+
+    print(f"\n  {c(B,'Run mode')}  {c(DIM, f'(currently: {cur_mode_str})')}")
+    print(f"    {c(CY,'[1]')} Localization only")
+    print(f"    {c(CY,'[2]')} Patch only  {c(DIM,'(requires a loc_run_id from a previous run)')}")
+    print(f"    {c(CY,'[3]')} Both — localization then patch")
+    mode_choice = prompt("Mode", "1" if not cur_patch else ("2" if not cur_loc else "3"))
+
+    is_loc_mode   = mode_choice != '2'
+    is_patch_mode = mode_choice in ('2', '3')
+    loc_run_id    = ''
+
+    if mode_choice == '2':
+        loc_run_id = prompt("  loc_run_id from previous run", cur_cfg.get('loc_run_id', '')) or ''
+        if not loc_run_id:
+            print(c(RD, "  ✗ loc_run_id required for patch-only mode."))
+            return
+
+    mode_label = {
+        '1': c(GR, 'Localization only'),
+        '2': c(YL, 'Patch only'),
+        '3': c(GR, 'Both (loc + patch)'),
+    }.get(mode_choice, '')
+    print(f"  Mode: {mode_label}")
+    if loc_run_id:
+        print(f"  loc_run_id: {c(CY, loc_run_id)}")
 
     if not confirm("\n  Save and update caro_monitor.sh?"):
         return
 
-    # Save to base config (worker configs inherit from it)
-    cur_cfg['is_loc_mode'] = True
-    cur_cfg['is_patch_mode'] = patch_enabled
-    cur_cfg.pop('patch_enabled', None)
+    # Save to base config
+    cur_cfg['is_loc_mode']  = is_loc_mode
+    cur_cfg['is_patch_mode'] = is_patch_mode
+    cur_cfg['loc_run_id']   = loc_run_id
+    for old_key in ('patch_enabled', 'initial_prompt'):
+        cur_cfg.pop(old_key, None)
     CONFIG.write_text(json.dumps(cur_cfg, indent=4))
-    print(c(GR, f"  ✓ patch_enabled={str(patch_enabled).lower()} saved to experiment_setup.json"))
+    print(c(GR, f"  ✓ run mode saved to experiment_setup.json"))
 
     ids = [r['localId'] for r in selected]
     save_monitor_ids(ids)
@@ -598,12 +632,10 @@ def setup_batch():
     else:
         print(c(YL, f'⚠  Push failed — run `git push` manually to sync\n  {c(DIM, push_msg)}'))
 
-    # Ensure worker configs exist
+    # Always regenerate worker configs so they pick up the new run mode settings
     for i in range(n_workers):
-        wpath = DIR / f'experiment_setup_w{i}.json'
-        if not wpath.exists():
-            make_worker_config(i)
-            print(c(GR, f"  ✓ Created experiment_setup_w{i}.json"))
+        make_worker_config(i)
+    print(c(GR, f"  ✓ Worker configs updated ({n_workers} workers)"))
 
     if confirm("  Launch caro_monitor.sh now?"):
         print(c(GR, "\n  Starting monitor (Ctrl+C to abort)...\n"))

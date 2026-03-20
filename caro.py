@@ -61,10 +61,27 @@ if __name__ == "__main__":
         logger.critical(f'ERROR: Invalid arvo vulnerability id: {vuln_id}')
         sys.exit(1)
 
-    # Patch-only mode requires either a loc run or a loc_run_id
-    if is_patch_mode and not (is_loc_mode or loc_run_id) and not is_resume:
-        logger.critical('ERROR: is_patch_mode=true requires is_loc_mode=true or loc_run_id to be set')
+    # Patch-only mode requires loc_run_id or is_resume
+    if is_patch_mode and not is_loc_mode and not loc_run_id and not is_resume:
+        logger.critical('ERROR: patch-only mode requires loc_run_id to be set')
         sys.exit(1)
+
+    # ── Refresh Claude credentials from rootainer ──────────────────────────────
+    # OAuth tokens expire — copy fresh credentials before each run
+    import tempfile as _tmpmod
+    with _tmpmod.TemporaryDirectory() as _tmp:
+        _creds = os.path.join(_tmp, '.credentials.json')
+        _cfg   = os.path.join(_tmp, '.claude.json')
+        import subprocess as _sp
+        if _sp.run(['docker', 'cp', 'rootainer:/root/.claude/.credentials.json', _creds],
+                   capture_output=True).returncode == 0:
+            _sp.run(['docker', 'cp', _creds, f'{container_name}:/root/.claude/.credentials.json'],
+                    capture_output=True)
+        if _sp.run(['docker', 'cp', 'rootainer:/root/.claude.json', _cfg],
+                   capture_output=True).returncode == 0:
+            _sp.run(['docker', 'cp', _cfg, f'{container_name}:/root/.claude.json'],
+                    capture_output=True)
+        logger.info(f'Claude credentials refreshed from rootainer → {container_name}')
 
     run_id = f'arvo-{vuln_id}-vul-{int(time.time())}'
     logger.info(f'Experiment base run_id: {run_id}')
@@ -75,14 +92,39 @@ if __name__ == "__main__":
         logger.error(f"Missing context for {vuln_id} — aborting")
         sys.exit(1)
 
-    # ── Localization run ───────────────────────────────────────────────────────
+    # ── Pre-fetch loc context if patch mode + existing loc_run_id supplied ─────
+    # Allows patch-only mode and skipping a re-run when context already exists
     loc_context = None
     current_loc_run_id = loc_run_id  # may be pre-supplied
 
+    if is_patch_mode and loc_run_id:
+        db_loc_result = get_localization(loc_run_id)
+        if db_loc_result is not None:
+            if db_loc_result[1] != vuln_id:
+                logger.error(
+                    f'loc_run_id {loc_run_id} belongs to vuln {db_loc_result[1]}, '
+                    f'not {vuln_id} — aborting'
+                )
+                sys.exit(1)
+            try:
+                loc_context = json.loads(db_loc_result[0]) if db_loc_result[0] else {}
+            except (json.JSONDecodeError, TypeError):
+                loc_context = {}
+            for v in (loc_context or {}).get('vulnerabilities', []):
+                v.pop('confidence_score', None)
+            if not loc_context:
+                logger.warning(f'Loc context for {loc_run_id} is empty')
+        else:
+            if not is_loc_mode:
+                logger.error(f'No loc result found for {loc_run_id} and is_loc_mode=false — aborting')
+                sys.exit(1)
+            logger.warning(f'No loc result found for {loc_run_id} — will run localization first')
+
+    # ── Localization run ───────────────────────────────────────────────────────
     if is_loc_mode:
-        # If a previous loc result was supplied, use it instead of re-running
-        if loc_run_id:
-            logger.info(f'Skipping loc run — using supplied loc_run_id: {loc_run_id}')
+        # Skip loc run if we already have valid context from a pre-supplied loc_run_id
+        if loc_context is not None:
+            logger.info(f'Skipping loc run — using pre-fetched context from {loc_run_id}')
         else:
             if not is_resume:
                 loc_prompt = (
@@ -130,35 +172,23 @@ if __name__ == "__main__":
 
     # ── Patch run ──────────────────────────────────────────────────────────────
     if is_patch_mode:
-        # Fetch localization context from DB
         if not is_resume:
-            db_loc_result = get_localization(current_loc_run_id) if current_loc_run_id else None
-
-            if db_loc_result:
-                raw_context = db_loc_result[0]
-                fetched_vuln_id = db_loc_result[1]
-
-                if fetched_vuln_id != vuln_id:
-                    logger.error(
-                        f'loc_run_id {current_loc_run_id} belongs to vuln {fetched_vuln_id}, '
-                        f'not {vuln_id} — aborting patch run'
-                    )
-                    sys.exit(1)
-
-                try:
-                    loc_context = json.loads(raw_context) if raw_context else {}
-                except (json.JSONDecodeError, TypeError):
+            # If context wasn't pre-fetched (e.g. loc run just completed), fetch now
+            if loc_context is None:
+                db_loc_result = get_localization(current_loc_run_id) if current_loc_run_id else None
+                if db_loc_result:
+                    try:
+                        loc_context = json.loads(db_loc_result[0]) if db_loc_result[0] else {}
+                    except (json.JSONDecodeError, TypeError):
+                        loc_context = {}
+                    for v in (loc_context or {}).get('vulnerabilities', []):
+                        v.pop('confidence_score', None)
+                else:
+                    logger.warning(f'No loc result found for {current_loc_run_id} — proceeding without context')
                     loc_context = {}
 
-                if not loc_context:
-                    logger.warning('Localization context is empty — patch prompt will have no findings')
-
-                # Strip confidence scores (not useful to the patch agent)
-                for vuln in loc_context.get('vulnerabilities', []):
-                    vuln.pop('confidence_score', None)
-            else:
-                logger.warning(f'No localization result found for {current_loc_run_id} — proceeding without context')
-                loc_context = {}
+            if not loc_context:
+                logger.warning('Localization context is empty — patch prompt will have no findings')
 
             patch_prompt = (
                 f'Fix the root cause of the memory safety vulnerability causing the crash [{crash_type}] '
