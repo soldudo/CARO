@@ -5,16 +5,15 @@ import os
 import sys
 from pathlib import Path
 import time
-from queries import get_context, get_session_id, update_caro_log, update_ground_truth
-from agent_tools import conduct_run, conduct_patch_run
-from run_parser import parse_agent_run, parse_patch_run
-from commit_files import download_commit_files
+from queries import get_context, get_localization, update_caro_log
+from agent_tools import conduct_run
+from run_parser import parse_agent_run
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(name)s] - %(message)s',
     handlers=[
-        logging.FileHandler("caro.log", mode='w'), # recommend mode='w' otherwise multiple run logs will be stored for one run in db
+        logging.FileHandler("caro.log", mode='w'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -27,7 +26,6 @@ def load_config(config_path=None):
 
     if not os.path.exists(config_path):
         logger.critical(f"Config file not found at {config_path}")
-        print(f"CRITICAL: Config file not found at {config_path}")
         sys.exit(1)
 
     try:
@@ -35,10 +33,8 @@ def load_config(config_path=None):
             data = json.load(f)
             logger.info(f'loaded experiment parameters: {data}')
             return data
-
     except json.JSONDecodeError as e:
         logger.critical(f"JSON file is corrupt or invalid: {e}")
-        print(f"CRITICAL: JSON file is corrupt or invalid.\nError details: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
@@ -46,137 +42,164 @@ if __name__ == "__main__":
     parser.add_argument('--config', default=None, help='Path to experiment config JSON')
     args = parser.parse_args()
 
-    patch_url = None
-    logger.info('######### Starting CARO Experiment Run #########')
-    experiment_params = load_config(args.config)
-    vuln_id = experiment_params.get('arvo_id')
-    container_name = experiment_params.get('container_name')
-    agent = experiment_params.get('agent', 'codex')
-    resume_flag = experiment_params.get('resume_flag', False)
-    resume_id = experiment_params.get('resume_id', None)
-    patch_enabled = experiment_params.get('patch_enabled', False)
-
-
-    # Definine the run name (previously container) as arvo-vuln_id-vuln_flag-timestamp
-    run_id = f'arvo-{vuln_id}-vul{int(time.time())}'
-    logger.info(f'Experiment assigned run_id: {run_id}')
-
-    # Get project and crash type from ARVO.db
-    project, crash_type, patch_url = get_context(vuln_id)
-    logger.info(f"Experiment setup for ARVO ID {vuln_id}: project={project}, crash_type={crash_type}, patch_url={patch_url}")
-    # Does not check for patch url which isn't critical to execution
-    if project is None or crash_type is None:
-        context_error = f"ERROR: Missing context - project is {project} and crash_type is {crash_type} for ID {vuln_id}. Execution aborted."
-        logger.error(context_error)
-        raise ValueError(context_error)
-
-    if not resume_flag:
-        # localization only prompt
-        prompt = f'Investigate the memory safety vulnerability causing the crash [{crash_type}] in the {project} project as shown in the opt/agent/crash.log file. Please initialize your environment using the opt/agent/memory_safety_agent.md persona. Use the patterns and checklist provided in the opt/agent/memory_safety_skills.md file. Localize the source causing this crash by providing the relevant files, functions and lines. Finally, provide the full function call chain that leads to the crash site in the format: `func_a() [file.c:line] --> func_b() [file.c:line] --> ... --> crash_site() [file.c:line]`, tracing the execution path from the earliest entry point down to the exact line where the vulnerability is triggered.'
-    else:
-        prompt = 'continue where you left off'
-        resume_id = experiment_params.get('resume_id', None)
-
-    run_params = {
-        "vuln_id": vuln_id,
-        "run_id": run_id,
-        "container_name": container_name,
-        "prompt": prompt,
-        "agent": agent,
-        "resume_flag": resume_flag,
-        "resume_session_id": resume_id,
-        "patch_url": patch_url
-    }
-
-    # conduct the localization experiment
-    try:
-        agent_return_code = parse_agent_run(conduct_run(**run_params))
-        if agent_return_code != 0:
-            logger.error(f'Agent exited with code {agent_return_code} — run saved to DB as error')
-            sys.exit(1)
-    except Exception as e:
-        logger.error(f'Error encountered: {e}')
-        sys.exit(1)
-
-    # patch phase (optional)
-    if patch_enabled:
-        logger.info('Patch phase enabled — starting patch run')
-        session_id = get_session_id(run_id)
-        if not session_id:
-            logger.warning(f'Patch phase skipped: no session_id found for run {run_id}')
-        else:
-            patch_prompt = (
-                f'Based on your localization above, apply a minimal fix to address the '
-                f'[{crash_type}] vulnerability. Make your changes directly in the container '
-                f'filesystem. Then output the complete patch as a unified diff in a '
-                f'```diff code block. After that: run `arvo compile` to recompile, run '
-                f'`arvo` to test, and output exactly `PATCHED` if the crash no longer '
-                f'occurs, or `NOT_PATCHED` if the crash still occurs or compilation fails. '
-                f'One attempt only — do not retry.'
-            )
-            try:
-                patch_log_path = conduct_patch_run(
-                    run_id=run_id,
-                    session_id=session_id,
-                    container_name=container_name,
-                    vuln_id=vuln_id,
-                    patch_prompt=patch_prompt,
-                    patch_url=patch_url
-                )
-                parse_patch_run(patch_log_path, run_id)
-                logger.info(f'Patch phase complete for run {run_id}')
-            except Exception as e:
-                logger.error(f'Patch phase error for run {run_id}: {e}')
-    else:
-        logger.info('Patch phase disabled — skipping')
-
-    # Ground truth logic deactivated pending rework to diff
-
-    # copy original versions of modified files to db
-
-    # run_path = Path(__file__).parent / 'runs' / run_id
-
-    # # download ground truth from repo commit url
-    # try:
-    #     ground_truth_files = download_commit_files(patch_url, run_path)
-    # except Exception as e:
-    #     logger.error(f'Skipping download. Error getting commit files from {patch_url}: {e}')
-    #     ground_truth_files = []
-
-    # # send ground truth files to db
-    # for gt_file in ground_truth_files:
-    #     gt_path = Path(gt_file)
-    #     logger.debug(f'gt_path: {gt_path}')
-
-    #     try:
-    #         relative_path = gt_path.relative_to(run_path)
-    #         logger.info(f'relative_path_str: {relative_path}')
-
-    #         # consider adding this check
-    #         # if len(relative_path.parts) > 1 and relative_path.parts[0] == 'grndtrth':
-
-    #         truncated_gt_path = Path(*relative_path.parts[1:])  # remove 'grndtrth' folder for db path
-    #         logger.info(f'truncated_gt_path for db: {truncated_gt_path}')
-
-    #         with open(gt_file, 'r', encoding='utf-8', errors='replace') as f:
-    #             content = f.read()
-    #     except ValueError:
-    #         logger.error(f'Path error: GT file at {gt_path} is not inside {run_path}')
-
-    #     except Exception as e:
-    #         logger.error(f'Error reading ground truth file {gt_file} for database insertion: {e}')
-
-    #     try:
-    #         update_ground_truth(vuln_id=vuln_id, file_path=str(truncated_gt_path), content=content)
-    #     except Exception as e:
-    #         logger.error(f'Database error inserting ground truth for {truncated_gt_path}: {e}')
-
-    logger.info('######### CARO Experiment Run Complete #########')
     caro_dir = Path(__file__).parent
     caro_log_path = caro_dir / 'caro.log'
 
-    # update caro_log in db
-    try:
-        update_caro_log(run_id, str(caro_log_path))
-    except Exception as e:
-        logger.error(f'Error updating caro_log in database for run {run_id}: {e}')
+    logger.info('######### Starting CARO Experiment Run #########')
+    experiment_params = load_config(args.config)
+
+    vuln_id        = experiment_params.get('arvo_id')
+    container_name = experiment_params.get('container_name', 'rootainer')
+    agent          = experiment_params.get('agent', 'claude')
+    is_loc_mode    = experiment_params.get('is_loc_mode', True)
+    is_patch_mode  = experiment_params.get('is_patch_mode', False)
+    loc_run_id     = experiment_params.get('loc_run_id', None)
+    is_resume      = experiment_params.get('is_resume', False)
+    resume_id      = experiment_params.get('resume_id', None)
+
+    if not vuln_id or not isinstance(vuln_id, int):
+        logger.critical(f'ERROR: Invalid arvo vulnerability id: {vuln_id}')
+        sys.exit(1)
+
+    # Patch-only mode requires either a loc run or a loc_run_id
+    if is_patch_mode and not (is_loc_mode or loc_run_id) and not is_resume:
+        logger.critical('ERROR: is_patch_mode=true requires is_loc_mode=true or loc_run_id to be set')
+        sys.exit(1)
+
+    run_id = f'arvo-{vuln_id}-vul-{int(time.time())}'
+    logger.info(f'Experiment base run_id: {run_id}')
+
+    project, crash_type, patch_url = get_context(vuln_id)
+    logger.info(f"ARVO {vuln_id}: project={project}, crash_type={crash_type}")
+    if project is None or crash_type is None:
+        logger.error(f"Missing context for {vuln_id} — aborting")
+        sys.exit(1)
+
+    # ── Localization run ───────────────────────────────────────────────────────
+    loc_context = None
+    current_loc_run_id = loc_run_id  # may be pre-supplied
+
+    if is_loc_mode:
+        # If a previous loc result was supplied, use it instead of re-running
+        if loc_run_id:
+            logger.info(f'Skipping loc run — using supplied loc_run_id: {loc_run_id}')
+        else:
+            if not is_resume:
+                loc_prompt = (
+                    f'Investigate the memory safety vulnerability causing the crash [{crash_type}] '
+                    f'in the {project} project as shown in the opt/agent/crash.log file. '
+                    f'Please initialize your environment using the opt/agent/memory_safety_agent.md persona. '
+                    f'Use the patterns and checklist provided in the opt/agent/memory_safety_skills.md file. '
+                    f'Localize the source causing this crash by providing the relevant files, functions and lines. '
+                    f'Finally, provide the full function call chain that leads to the crash site in the format: '
+                    f'`func_a() [file.c:line] --> func_b() [file.c:line] --> ... --> crash_site() [file.c:line]`, '
+                    f'tracing the execution path from the earliest entry point down to the exact line where '
+                    f'the vulnerability is triggered.'
+                )
+                # Once resumed, subsequent patch run should not re-resume
+                is_resume = False
+            else:
+                loc_prompt = 'continue where you left off'
+
+            current_loc_run_id = run_id + '-loc'
+            loc_run_params = {
+                "vuln_id": vuln_id,
+                "run_id": current_loc_run_id,
+                "container_name": container_name,
+                "prompt": loc_prompt,
+                "agent": agent,
+                "resume_flag": is_resume,
+                "resume_session_id": resume_id,
+                "patch_url": patch_url,
+            }
+
+            try:
+                agent_rc = parse_agent_run(
+                    conduct_run(**loc_run_params),
+                    run_mode='loc'
+                )
+                logger.info('######### CARO Localization Run Complete #########')
+                update_caro_log(run_id=current_loc_run_id, caro_log_path=str(caro_log_path))
+                if agent_rc != 0:
+                    logger.error(f'Localization agent exited with code {agent_rc}')
+                    sys.exit(1)
+            except Exception as e:
+                logger.error(f'Localization run error: {e}')
+                sys.exit(1)
+
+    # ── Patch run ──────────────────────────────────────────────────────────────
+    if is_patch_mode:
+        # Fetch localization context from DB
+        if not is_resume:
+            db_loc_result = get_localization(current_loc_run_id) if current_loc_run_id else None
+
+            if db_loc_result:
+                raw_context = db_loc_result[0]
+                fetched_vuln_id = db_loc_result[1]
+
+                if fetched_vuln_id != vuln_id:
+                    logger.error(
+                        f'loc_run_id {current_loc_run_id} belongs to vuln {fetched_vuln_id}, '
+                        f'not {vuln_id} — aborting patch run'
+                    )
+                    sys.exit(1)
+
+                try:
+                    loc_context = json.loads(raw_context) if raw_context else {}
+                except (json.JSONDecodeError, TypeError):
+                    loc_context = {}
+
+                if not loc_context:
+                    logger.warning('Localization context is empty — patch prompt will have no findings')
+
+                # Strip confidence scores (not useful to the patch agent)
+                for vuln in loc_context.get('vulnerabilities', []):
+                    vuln.pop('confidence_score', None)
+            else:
+                logger.warning(f'No localization result found for {current_loc_run_id} — proceeding without context')
+                loc_context = {}
+
+            patch_prompt = (
+                f'Fix the root cause of the memory safety vulnerability causing the crash [{crash_type}] '
+                f'in the {project} project. The crash log can be found at opt/agent/crash.log.\n\n'
+                f'The following JSON contains localized vulnerability findings:\n\n'
+                f'{json.dumps(loc_context, indent=2)}\n\n'
+                f'For each entry in the vulnerabilities array:\n'
+                f'1. Read the cited file and examine the specified lines\n'
+                f'2. Apply a minimal fix addressing the root cause in the summary\n'
+                f'3. If the summary references a correctly-handled parallel code path, mirror that approach\n\n'
+                f'Produce a separate .diff per file. Do not combine fixes across different files.\n\n'
+                f'Please initialize your environment using the opt/agent/patch_agent.md persona. '
+                f'Use the patterns provided in the opt/agent/patch_skills.md file.'
+            )
+        else:
+            patch_prompt = 'continue where you left off'
+
+        patch_run_id = run_id + '-patch'
+        patch_run_params = {
+            "vuln_id": vuln_id,
+            "run_id": patch_run_id,
+            "container_name": container_name,
+            "prompt": patch_prompt,
+            "agent": agent,
+            "resume_flag": is_resume,
+            "resume_session_id": resume_id,
+            "patch_url": patch_url,
+        }
+
+        try:
+            agent_rc = parse_agent_run(
+                conduct_run(**patch_run_params),
+                run_mode='patch',
+                loc_run_id=current_loc_run_id
+            )
+            logger.info('######### CARO Patch Run Complete #########')
+            update_caro_log(run_id=patch_run_id, caro_log_path=str(caro_log_path))
+            if agent_rc != 0:
+                logger.error(f'Patch agent exited with code {agent_rc}')
+                sys.exit(1)
+        except Exception as e:
+            logger.error(f'Patch run error: {e}')
+            sys.exit(1)
+
+    logger.info('######### CARO Experiment Run Complete #########')

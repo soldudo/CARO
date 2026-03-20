@@ -566,9 +566,9 @@ def setup_batch():
 
     # Patch phase toggle
     cur_cfg = json.loads(CONFIG.read_text())
-    cur_patch = cur_cfg.get('patch_enabled', False)
+    cur_patch = cur_cfg.get('is_patch_mode', False)
     cur_patch_str = 'ON' if cur_patch else 'OFF'
-    print(f"\n  {c(B,'Patch phase')} (fix bug after localization — one attempt):")
+    print(f"\n  {c(B,'Patch phase')} (fix bug after localization — fresh patch agent run):")
     print(f"    {c(CY,'[y]')} Enable   {c(CY,'[n]')} Disable   {c(DIM, '(currently: ' + cur_patch_str + ')')}")
     patch_enabled = (prompt("Patch phase", "y" if cur_patch else "n").lower() == 'y')
     print(f"  Patch phase: {c(GR,'ENABLED') if patch_enabled else c(DIM,'DISABLED')}")
@@ -576,8 +576,10 @@ def setup_batch():
     if not confirm("\n  Save and update caro_monitor.sh?"):
         return
 
-    # Save patch_enabled to base config (worker configs inherit from it)
-    cur_cfg['patch_enabled'] = patch_enabled
+    # Save to base config (worker configs inherit from it)
+    cur_cfg['is_loc_mode'] = True
+    cur_cfg['is_patch_mode'] = patch_enabled
+    cur_cfg.pop('patch_enabled', None)
     CONFIG.write_text(json.dumps(cur_cfg, indent=4))
     print(c(GR, f"  ✓ patch_enabled={str(patch_enabled).lower()} saved to experiment_setup.json"))
 

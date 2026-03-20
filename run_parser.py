@@ -79,7 +79,7 @@ def init_db():
         cursor.close()
         conn.close()
 
-def parse_agent_run(run_path: Path):
+def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None):
     run_id = run_path.parent.name
     session_start = session_end = None
     agent_output_events = []  # collects all individual agent events
@@ -125,9 +125,11 @@ def parse_agent_run(run_path: Path):
     duration = int(session_end.get('duration_seconds', 0))
     command_list = session_start.get('command')
     return_code = session_end.get('return_code')
-    run_mode = session_start.get('run_mode', 'loc')
+    # Prefer explicit params (passed by caro.py); fall back to session_start fields
+    # (populated by conduct_run once part 2 lands)
+    run_mode = run_mode or session_start.get('run_mode', 'loc')
+    loc_run_id = loc_run_id or session_start.get('loc_run_id')
     prompt = session_start.get('prompt')
-    loc_run_id = session_start.get('loc_run_id')
 
     # Unified event list — works for both old and new Claude CLI formats
     agent_trace = agent_output_events
