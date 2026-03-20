@@ -216,6 +216,73 @@ def worker_status():
         out.append((name, bool(r.stdout.strip()), cfg))
     return out
 
+# ── Re-auth ───────────────────────────────────────────────────────────────────
+def reauth_claude():
+    header("Re-authenticate Claude")
+
+    if not docker_running('rootainer'):
+        print(c(RD, "\n  ✗ rootainer is not running. Start it first via [6] First-time setup."))
+        return
+
+    # Check current auth state
+    print(f"\n  {c(DIM,'Checking current auth state in rootainer...')} ", end='', flush=True)
+    r = subprocess.run(
+        ['docker', 'exec', 'rootainer', 'claude', '-p', 'hi', '--output-format', 'json'],
+        capture_output=True, text=True, timeout=30
+    )
+    auth_ok = False
+    if r.returncode == 0:
+        try:
+            import json as _json
+            events = _json.loads(r.stdout)
+            if isinstance(events, list):
+                for e in events:
+                    if isinstance(e, dict) and e.get('type') == 'result':
+                        auth_ok = not e.get('is_error', True)
+                        break
+        except Exception:
+            auth_ok = True  # non-JSON but exit 0 — treat as ok
+    print(c(GR, '✓ authenticated') if auth_ok else c(RD, '✗ not authenticated / expired'))
+
+    if not auth_ok:
+        print(f"\n  {c(YL,'⚠')} Claude credentials in rootainer are expired or invalid.")
+        print(f"  Open a shell, run {c(CY,'claude')} and follow the OAuth flow:")
+        if confirm("  Open interactive shell in rootainer now?"):
+            subprocess.run(['docker', 'exec', '-it', 'rootainer', 'bash'])
+            print(f"  {c(DIM,'(returned from shell)')}")
+    elif not confirm("\n  Auth looks fine. Re-authenticate anyway?"):
+        pass
+    else:
+        if confirm("  Open interactive shell in rootainer to re-authenticate?"):
+            subprocess.run(['docker', 'exec', '-it', 'rootainer', 'bash'])
+            print(f"  {c(DIM,'(returned from shell)')}")
+
+    # Copy fresh credentials to all workers
+    n = get_monitor_workers()
+    print(f"\n  {c(DIM,f'Copying fresh credentials to {n} workers...')}")
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as tmp:
+        creds_tmp = os.path.join(tmp, '.credentials.json')
+        cfg_tmp   = os.path.join(tmp, '.claude.json')
+        r1 = subprocess.run(['docker', 'cp', 'rootainer:/root/.claude/.credentials.json', creds_tmp],
+                            capture_output=True)
+        r2 = subprocess.run(['docker', 'cp', 'rootainer:/root/.claude.json', cfg_tmp],
+                            capture_output=True)
+        if r1.returncode != 0 or r2.returncode != 0:
+            print(c(RD, "  ✗ Failed to copy credentials from rootainer. Is rootainer authenticated?"))
+            return
+        for i in range(n):
+            name = f'rootainer-{i}'
+            if not docker_running(name):
+                print(c(YL, f"  ⚠ {name} not running — skipping"))
+                continue
+            subprocess.run(['docker', 'cp', creds_tmp, f'{name}:/root/.claude/.credentials.json'],
+                           capture_output=True)
+            subprocess.run(['docker', 'cp', cfg_tmp, f'{name}:/root/.claude.json'],
+                           capture_output=True)
+            print(f"  {c(GR,'✓')} {name}")
+    print(c(GR, "\n  ✓ Credentials refreshed on all workers."))
+
 # ── Worker / rootainer setup ───────────────────────────────────────────────────
 def docker_running(name):
     r = subprocess.run(['docker', 'ps', '-q', '-f', f'name=^{name}$'],
@@ -736,6 +803,7 @@ def main():
         print(f"    {c(CY,'[4]')} Worker setup  ({worker_tag})")
         print(f"    {c(CY,'[5]')} Notification settings  [{c(YL, ntfy_channel_str())}]")
         print(f"    {c(CY,'[6]')} First-time setup  {c(DIM,'(build image, start rootainer)')}")
+        print(f"    {c(CY,'[7]')} Re-authenticate Claude  {c(DIM,'(fix expired credentials)')}")
         print(f"    {c(CY,'[q]')} Quit")
         choice = prompt("", "0").lower()
 
@@ -746,6 +814,7 @@ def main():
         elif choice == '4': setup_workers()
         elif choice == '5': setup_notifications()
         elif choice == '6': first_time_setup()
+        elif choice == '7': reauth_claude()
         elif choice == 'q':
             print(f"\n  {c(DIM,'Bye.')}\n")
             sys.exit(0)

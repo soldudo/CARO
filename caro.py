@@ -88,13 +88,25 @@ if __name__ == "__main__":
         ['docker', 'exec', container_name, 'claude', '-p', 'hi', '--output-format', 'json'],
         capture_output=True, text=True, timeout=30
     )
+    auth_error = None
     if auth_check.returncode != 0:
+        auth_error = f'exit code {auth_check.returncode}'
+    else:
+        # Parse streaming JSON array to find result event
         try:
-            result_data = json.loads(auth_check.stdout)
-            result_text = result_data.get('result', auth_check.stdout)
+            events = json.loads(auth_check.stdout)
+            if isinstance(events, list):
+                for event in events:
+                    if isinstance(event, dict) and event.get('type') == 'result':
+                        if event.get('is_error'):
+                            auth_error = event.get('result', 'unknown auth error')
+                        break
         except Exception:
-            result_text = auth_check.stdout or auth_check.stderr
-        logger.critical(f'Claude auth check failed in {container_name}: {result_text[:200]}')
+            pass  # non-JSON output — treat as success if exit 0
+
+    if auth_error:
+        logger.critical(f'Claude auth check failed in {container_name}: {auth_error[:300]}')
+        logger.critical('Re-authenticate Claude in rootainer via setup_experiment.py → [7] Re-auth')
         sys.exit(1)
     logger.info(f'Claude auth verified in {container_name}')
 
