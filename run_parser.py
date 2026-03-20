@@ -16,10 +16,12 @@ def init_db():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS runs (
                 run_id TEXT PRIMARY KEY,
+                run_mode TEXT NOT NULL DEFAULT 'loc',
                 vuln_id INTEGER NOT NULL,
                 timestamp TEXT,
                 agent TEXT,
                 agent_model TEXT,
+                prompt TEXT,
                 result TEXT,
                 result_json TEXT,
                 agent_thought_log TEXT,
@@ -31,7 +33,6 @@ def init_db():
                 output_tokens INTEGER,
                 total_tokens INTEGER,
                 input_tokens INTEGER,
-                       
                 input_from_cache_tokens INTEGER,
                 input_written_to_cache_tokens INTEGER,
                 usage_dict TEXT,
@@ -44,39 +45,33 @@ def init_db():
                 command TEXT,
                 agent_log TEXT,
                 caro_log TEXT,
-                patch_diff TEXT,
-                patch_result TEXT,
-                patch_log TEXT,
                 FOREIGN KEY (vuln_id) REFERENCES arvo(localId)
             )
         ''')
 
-        # Migration: add patch columns to existing databases
-        for col, defn in [('patch_diff', 'TEXT'), ('patch_result', 'TEXT'), ('patch_log', 'TEXT')]:
+        # Migrations for existing databases
+        for col, defn in [('run_mode', "TEXT NOT NULL DEFAULT 'loc'"), ('prompt', 'TEXT')]:
             try:
                 cursor.execute(f'ALTER TABLE runs ADD COLUMN {col} {defn}')
             except sqlite3.OperationalError:
                 pass  # column already exists
 
-        # Table for File Changes (One-to-Many relationship with runs)
         cursor.execute('''CREATE TABLE IF NOT EXISTS run_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
-                       event_num INTEGER,
-                       event_type TEXT,
-                       event_text TEXT,
-                       event_usage TEXT,
+            event_num INTEGER,
+            event_type TEXT,
+            event_text TEXT,
+            event_usage TEXT,
             FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS run_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL,
-                       event_num INTEGER,
-                       event_type TEXT,
-                       event_text TEXT,
-                       event_usage TEXT,
-            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+        cursor.execute('''CREATE TABLE IF NOT EXISTS patch_data (
+            run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+            experiment_tag TEXT,
+            loc_source TEXT,
+            is_crash_resolved BOOLEAN,
+            patch_crash_log TEXT
         )''')
 
         conn.commit()
@@ -130,6 +125,9 @@ def parse_agent_run(run_path: Path):
     duration = int(session_end.get('duration_seconds', 0))
     command_list = session_start.get('command')
     return_code = session_end.get('return_code')
+    run_mode = session_start.get('run_mode', 'loc')
+    prompt = session_start.get('prompt')
+    loc_run_id = session_start.get('loc_run_id')
 
     # Unified event list — works for both old and new Claude CLI formats
     agent_trace = agent_output_events
@@ -272,22 +270,22 @@ def parse_agent_run(run_path: Path):
         conn = sqlite3.connect(DB_PATH)
         conn.execute("PRAGMA foreign_keys = ON") 
         cursor = conn.cursor()
-        placeholders = ", ".join(["?"] * 27)
+        placeholders = ", ".join(["?"] * 29)
         cursor.execute(f'''
             INSERT INTO runs (
-                run_id, vuln_id, timestamp, agent, agent_model,
+                run_id, run_mode, vuln_id, timestamp, agent, agent_model, prompt,
                 result, result_json, agent_thought_log, agent_insight_log,
                 duration, total_cost_usd, num_turns, input_total_tokens, output_tokens,
-                total_tokens, input_tokens, input_from_cache_tokens, input_written_to_cache_tokens, 
+                total_tokens, input_tokens, input_from_cache_tokens, input_written_to_cache_tokens,
                 usage_dict, model_usage_dict, result_type, result_error_flag, stop_reason, return_code,
                 session_id, command, agent_log
             ) VALUES ({placeholders})
         ''', (
-            run_id, vuln_id, timestamp_iso, 'claude', agent_model,
+            run_id, run_mode, vuln_id, timestamp_iso, 'claude', agent_model, prompt,
             result, json.dumps(result_json), agent_thought_log, agent_insight_log,
             duration, total_cost_usd, num_turns, input_total_tokens, output_tokens,
             total_tokens, input_tokens, input_from_cache_tokens, input_written_to_cache_tokens,
-            json.dumps(usage_dict) if usage_dict else None, json.dumps(model_usage_dict) if model_usage_dict else None, 
+            json.dumps(usage_dict) if usage_dict else None, json.dumps(model_usage_dict) if model_usage_dict else None,
             result_type, result_error_flag, stop_reason, return_code,
             session_id, command, agent_log
         ))
@@ -297,6 +295,11 @@ def parse_agent_run(run_path: Path):
                 INSERT INTO run_events (run_id, event_num, event_type, event_text, event_usage)
                 VALUES (?, ?, ?, ?, ?)
             ''', (run_id, event.get('turn'), event.get('type'), event.get('text'), json.dumps(event.get('usage', {}))))
+
+        if run_mode == 'patch':
+            cursor.execute('''
+                INSERT INTO patch_data (run_id, loc_source) VALUES (?, ?)
+            ''', (run_id, loc_run_id))
 
         conn.commit()
     except sqlite3.IntegrityError as e:

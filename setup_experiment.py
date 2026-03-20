@@ -359,7 +359,8 @@ def setup_workers():
         print(f"  {c(GR,'✓')} Claude auth copied")
 
         # Copy agent files
-        for fname in ['memory_safety_agent.md', 'memory_safety_skills.md']:
+        for fname in ['memory_safety_agent.md', 'memory_safety_skills.md',
+                      'patch_agent.md', 'patch_skills.md']:
             src = DIR / fname
             if src.exists():
                 subprocess.run(['docker', 'exec', name, 'mkdir', '-p', '/opt/agent'],
