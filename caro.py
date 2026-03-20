@@ -83,6 +83,21 @@ if __name__ == "__main__":
                     capture_output=True)
         logger.info(f'Claude credentials refreshed from rootainer → {container_name}')
 
+    # ── Verify Claude auth before running anything ─────────────────────────────
+    auth_check = _sp.run(
+        ['docker', 'exec', container_name, 'claude', '-p', 'hi', '--output-format', 'json'],
+        capture_output=True, text=True, timeout=30
+    )
+    if auth_check.returncode != 0:
+        try:
+            result_data = json.loads(auth_check.stdout)
+            result_text = result_data.get('result', auth_check.stdout)
+        except Exception:
+            result_text = auth_check.stdout or auth_check.stderr
+        logger.critical(f'Claude auth check failed in {container_name}: {result_text[:200]}')
+        sys.exit(1)
+    logger.info(f'Claude auth verified in {container_name}')
+
     run_id = f'arvo-{vuln_id}-vul-{int(time.time())}'
     logger.info(f'Experiment base run_id: {run_id}')
 
