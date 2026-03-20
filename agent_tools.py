@@ -91,7 +91,7 @@ def process_codex_event(event):
 # if flag is true, but id is none, last will be used
 # def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, agent: str, run_mode: str, is_resume: bool = False, resume_session_id: str =None):
 
-def conduct_run(vuln_id, run_id, container_name, prompt, agent, resume_flag=False, resume_session_id=None, patch_url=None):
+def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode='loc', loc_run_id=None, resume_flag=False, resume_session_id=None, patch_url=None):
 
     # in case previous run crashed. Handle this better
     cleanup_dind('vulnscan', rootainer_name=container_name)
@@ -147,6 +147,9 @@ def conduct_run(vuln_id, run_id, container_name, prompt, agent, resume_flag=Fals
             'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
             'timestamp_unix': start_time,
             'vuln': vuln_id,
+            'run_mode': run_mode,
+            'loc_run_id': loc_run_id,
+            'prompt': prompt,
             'patch_url': patch_url,
             'command': command
         }
