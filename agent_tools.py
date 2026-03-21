@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 from arvo_tools import standby_dind, cleanup_dind
 from queries import get_original_crash_log
-from schema import RunParams
 import subprocess
 import time
 
@@ -143,7 +142,7 @@ def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode, loc_ru
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(f'Logging to {log_path}\n')
-    logger.info(f"Invoking agent with: {command}")
+    logger.debug(f"Invoking agent with: {command}")
     
     start_time = int(time.time())
     duration = 0

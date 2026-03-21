@@ -13,6 +13,63 @@ def _get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
+def get_all_runs_data(columns: str, conn: Optional[sqlite3.Connection] = None) -> Optional[list[tuple]]:
+    """
+    Fetches specified columns for all records in the runs table.
+    Expects a comma-separated string of column names.
+    """
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+
+    try:
+        # Note: As with your other helper, ensure 'columns' is strictly 
+        # controlled internally to prevent SQL injection.
+        cursor = conn.execute(f'SELECT {columns} FROM runs')
+        rows = cursor.fetchall()
+        
+        if not rows:
+            logger.warning(f'WARNING: No data found in the runs table.')
+            return []
+            
+        return rows
+
+    except sqlite3.Error as e:
+        logger.error(f'DB error retrieving {columns} for all runs: {e}')
+        return None
+    finally:
+        if should_close:
+            conn.close()
+            
+def _fetch_run_data(run_id: str, columns: str, conn: Optional[sqlite3.Connection] = None) -> Optional[tuple]:
+    """
+    Helper function to manage connections and fetch specific columns for a run_id.
+    """
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+
+    try:
+        # Note: 'columns' is provided internally by our own functions, 
+        # so using an f-string here is safe from SQL injection.
+        cursor = conn.execute(f'SELECT {columns} FROM runs WHERE run_id = ?', (run_id,))
+        row = cursor.fetchone()
+        
+        if row is None:
+            logger.warning(f'WARNING: No run found for run_id: {run_id} (Columns: {columns})')
+            return None
+            
+        return row
+
+    except sqlite3.Error as e:
+        logger.error(f'DB error retrieving {columns} for {run_id}: {e}')
+        return None
+    finally:
+        if should_close:
+            conn.close()
+
 # WARNING: 
     # ARVO's crash output field is sometimes truncated ie 42513136
     # Recommend manually fuzzing using command: arvo
@@ -213,26 +270,12 @@ def insert_crash_log(run_id: str, kind: CrashLogType, crash_log: str):
         cursor.close()
         conn.close()
 
-def get_localization(run_id: str, conn: Optional[sqlite3.Connection] = None):
-    should_close = False
-    if conn is None:
-        conn = _get_connection()
-        should_close = True
-    try:
-        cursor = conn.execute('SELECT result_json, vuln_id FROM runs WHERE run_id = ?', (run_id,))
-        row = cursor.fetchone()
-        if row is None:
-            logger.error(f'ERROR: No localization json found for {run_id}')
-            return None
-        return row
+def get_vuln_id(run_id: str, conn: Optional[sqlite3.Connection] = None):
+    return _fetch_run_data(run_id, 'vuln_id', conn)
 
-    except sqlite3.Error as e:
-        logger.error(f'db error retrieving result_json for {run_id}: {e}')
-        return None
-    finally:
-        if should_close:
-            conn.close()
-                     
+def get_result_json(run_id: str, conn: Optional[sqlite3.Connection] = None):
+    return _fetch_run_data(run_id, 'result_json, vuln_id', conn)
+
 def get_crash_log(run_id: str, kind: CrashLogType = CrashLogType.PATCH, conn: Optional[sqlite3.Connection] = None):
     should_close = False
     col_map = {
@@ -277,23 +320,8 @@ def get_original_crash_log(arvo_id: int):
 
 
 def get_resume_id(run_id: str, conn: Optional[sqlite3.Connection] = None):
-    should_close = False
-    if conn is None:
-        conn = _get_connection()
-        should_close = True
-    try:
-        cursor = conn.execute(f'SELECT resume_id FROM runs WHERE run_id = ?', (run_id,))
-        row = cursor.fetchone()
-        if row is None:
-            logger.warning(f'WARNING: No run found with id: {run_id}')
-            return None
-        return row[0]
-    except sqlite3.Error as e:
-        logger.error(f'db error retrieving resume_id for {run_id}')
-        return None
-    finally:
-        if should_close:
-            conn.close()
+    return _fetch_run_data(run_id, 'resume_id', conn)
+
 
 def get_agent_log(run_id: str):
     should_close = False

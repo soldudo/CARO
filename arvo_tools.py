@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import List, Optional
 from queries import get_context
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,21 @@ def setup_logger():
         ]
     )
 
-def run_command(cmd, check=True, stdout=None, stderr=subprocess.PIPE, timeout=None):
+def run_command(
+    cmd: List[str], 
+    container_name: Optional[str] = None, 
+    check: bool = True, 
+    stdout=None, 
+    stderr=subprocess.PIPE, 
+    timeout: Optional[int] = None
+) -> subprocess.CompletedProcess:
+    
+    # Prepend docker exec if a container is specified
+    if container_name:
+        # Use -i if you plan to pass input via stdin, otherwise just exec is fine
+        docker_prefix = ["docker", "exec", container_name]
+        cmd = docker_prefix + cmd
+
     try:
         logger.debug(f'Executing: {" ".join(cmd)}')
         result = subprocess.run(
@@ -39,7 +54,7 @@ def run_command(cmd, check=True, stdout=None, stderr=subprocess.PIPE, timeout=No
     except subprocess.TimeoutExpired as e:
         logger.error(f'Command timed out: {e}')
         raise
-
+    
 # TODO: Remove this feature
 def make_fs(container_name: str):
     fs_dir = os.path.join(os.getcwd(), 'scratch_fs', container_name)

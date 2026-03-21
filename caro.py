@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 import time
-from queries import get_context, update_caro_log, get_localization
+from queries import get_context, update_caro_log, get_result_json
 from agent_tools import conduct_run
 from run_parser import parse_agent_run
 
@@ -27,7 +27,6 @@ def load_config(config_path=None):
 
     if not os.path.exists(config_path):
         logger.critical(f"Config file not found at {config_path}")
-        print(f"CRITICAL: Config file not found at {config_path}")
         sys.exit(1)
 
     try:
@@ -38,7 +37,6 @@ def load_config(config_path=None):
             
     except json.JSONDecodeError as e:
         logger.critical(f"JSON file is corrupt or invalid: {e}")
-        print(f"CRITICAL: JSON file is corrupt or invalid.\nError details: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
@@ -96,7 +94,7 @@ if __name__ == "__main__":
     loc_context = None
     if is_patch_mode and loc_run_id:
 
-        db_loc_result = get_localization(loc_run_id)
+        db_loc_result = get_result_json(loc_run_id)
 
         is_context_valid = False
         loc_error_msg = ''
@@ -112,8 +110,11 @@ if __name__ == "__main__":
             loc_error_msg = f'Localization result for DB run_id {loc_run_id} is empty.'
             if loc_context:
                 # Found valid context
+                logger.info(f'Successfully loaded previous run {loc_run_id} localization context.')
+                logger.debug(loc_context)
                 is_context_valid = True
                 # remove confidence scores (arbitrary and we're not asking for related behavior)
+                logger.debug('Removing confidence scores from previous run loc_context')
                 for vuln in loc_context.get("vulnerabilities", []):
                     vuln.pop("confidence_score", None)
 
@@ -163,8 +164,8 @@ if __name__ == "__main__":
             #     is_resume=is_resume,
             #     resume_session_id=resume_id
             # )
-
-            logger.debug(f'Conducting localization run with parameters: {loc_run_params}')
+            logger.info('Conducting localization run')
+            logger.debug(f'Run parameters: {loc_run_params}')
 
             try:
                 # TODO Update tables and parse_run to handle loc & patch runs
@@ -184,11 +185,13 @@ if __name__ == "__main__":
 
         if not is_resume:
             if not loc_context:
-                current_loc_result = get_localization(current_loc_run_id)
+                logger.info('Getting localization context from the localization run that just completed.')
+                current_loc_result = get_result_json(current_loc_run_id)
                 if current_loc_result:
                         loc_context = json.loads(current_loc_result[0])
                         loc_run_id = current_loc_run_id
             # remove confidence scores (arbitrary and we're not asking for related behavior)
+            logger.debug('Removing confidence scores from localization context')
             for vuln in loc_context.get('vulnerabilities', []):
                 vuln.pop("confidence_score", None)
                 prompt = f'Investigate the memory safety vulnerability causing the crash [{crash_type}] in the {project} project as shown in the opt/agent/crash.log file. Please initialize your environment using the opt/agent/memory_safety_agent.md persona. Use the patterns and checklist provided in the opt/agent/memory_safety_skills.md file. Localize the source causing this crash by providing the relevant files, functions and lines.'
@@ -236,8 +239,8 @@ if __name__ == "__main__":
             "is_resume": is_resume,
             "resume_session_id": resume_id,
         }
-
-        logger.debug(f'Conducting patching run with parameters: {patch_run_prams}')
+        logger.info('Conducting patch run...')
+        logger.debug(f'Run parameters: {patch_run_prams}')
 
         try:
             parse_agent_run(conduct_run(**patch_run_prams))
