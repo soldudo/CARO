@@ -283,6 +283,90 @@ def reauth_claude():
             print(f"  {c(GR,'✓')} {name}")
     print(c(GR, "\n  ✓ Credentials refreshed on all workers."))
 
+# ── Diff tools ────────────────────────────────────────────────────────────────
+def run_diff_tools():
+    header("Diff Tools — Apply & Test a Patch")
+    print(f"\n  Enter the {c(B,'patch run_id')} to apply and test its diff.")
+    print(f"  {c(DIM,'This will spin up a container, apply the patch, compile, and run ARVO.')}\n")
+
+    patch_run_id = prompt("patch run_id")
+    if not patch_run_id:
+        print(c(RD, "  No run_id provided."))
+        return
+
+    container_name = prompt("Container name for test", "diff_test")
+
+    from queries import get_vuln_id, get_result_json
+    from arvo_tools import standby_container, run_command
+
+    vuln_result = get_vuln_id(patch_run_id)
+    if not vuln_result:
+        print(c(RD, f"  No run found for {patch_run_id}"))
+        return
+    vuln_id = vuln_result[0]
+    print(f"  vuln_id: {c(CY, vuln_id)}")
+
+    result_json_row = get_result_json(patch_run_id)
+    if not result_json_row or not result_json_row[0]:
+        print(c(RD, f"  No result_json found for {patch_run_id}"))
+        return
+
+    result_json = json.loads(result_json_row[0])
+    patches = result_json.get('patches', [])
+    if not patches:
+        print(c(RD, "  No patches found in result_json."))
+        return
+    print(f"  Found {c(GR, len(patches))} patch(es)")
+
+    # Write the unified diff file (inline — same logic as diff_tools.write_diff)
+    patch_path = 'test.patch'
+    with open(patch_path, 'w', encoding='utf-8') as f:
+        for i, patch in enumerate(patches):
+            diff_text = patch['diff']
+            if not diff_text.endswith('\n'):
+                diff_text += '\n'
+            f.write(diff_text)
+            if i < len(patches) - 1:
+                f.write('\n')
+    print(f"  {c(GR,'✓')} Wrote {patch_path}")
+
+    print(f"\n  {c(DIM,'Starting standby container...')}")
+    standby_container(container_name, vuln_id)
+
+    pwd = run_command(['pwd'], container_name=container_name, stdout=subprocess.PIPE).stdout.strip()
+    print(f"  {c(GR,'✓')} Container ready (pwd: {pwd})")
+
+    print(f"\n  {c(B,'Applying patch...')}")
+    patch_call = run_command(
+        ['git', 'apply', '--verbose', '-C1', pwd + '/' + patch_path],
+        container_name=container_name, check=False, stdout=subprocess.PIPE
+    )
+    if patch_call.returncode != 0:
+        print(c(RD, f"  ✗ git apply failed"))
+        if patch_call.stderr:
+            print(f"    {patch_call.stderr.strip()}")
+    else:
+        print(f"  {c(GR,'✓')} Patch applied")
+
+    print(f"\n  {c(B,'Compiling...')}")
+    compile_result = run_command(['arvo', 'compile'], container_name=container_name, check=False, stdout=subprocess.PIPE)
+    if compile_result.returncode != 0:
+        print(c(RD, f"  ✗ Compilation failed"))
+    else:
+        print(f"  {c(GR,'✓')} Compiled")
+
+    print(f"\n  {c(B,'Running ARVO...')}")
+    arvo_result = run_command(['arvo'], container_name=container_name, check=False, stdout=subprocess.PIPE)
+    if arvo_result.returncode != 0:
+        print(c(RD, f"  ✗ ARVO failed (exit {arvo_result.returncode})"))
+    else:
+        print(f"  {c(GR,'✓')} ARVO passed")
+
+    if arvo_result.stderr:
+        print(f"\n  {c(DIM,'ARVO stderr:')}")
+        for line in arvo_result.stderr.strip().splitlines()[:20]:
+            print(f"    {line}")
+
 # ── Worker / rootainer setup ───────────────────────────────────────────────────
 def docker_running(name):
     r = subprocess.run(['docker', 'ps', '-q', '-f', f'name=^{name}$'],
@@ -804,6 +888,7 @@ def main():
         print(f"    {c(CY,'[5]')} Notification settings  [{c(YL, ntfy_channel_str())}]")
         print(f"    {c(CY,'[6]')} First-time setup  {c(DIM,'(build image, start rootainer)')}")
         print(f"    {c(CY,'[7]')} Re-authenticate Claude  {c(DIM,'(fix expired credentials)')}")
+        print(f"    {c(CY,'[8]')} Diff tools  {c(DIM,'(apply & test a patch from a run)')}")
         print(f"    {c(CY,'[q]')} Quit")
         choice = prompt("", "0").lower()
 
@@ -815,6 +900,7 @@ def main():
         elif choice == '5': setup_notifications()
         elif choice == '6': first_time_setup()
         elif choice == '7': reauth_claude()
+        elif choice == '8': run_diff_tools()
         elif choice == 'q':
             print(f"\n  {c(DIM,'Bye.')}\n")
             sys.exit(0)

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import List, Optional
 from queries import get_context
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,20 @@ def setup_logger():
         ]
     )
 
-def run_command(cmd, check=True, stdout=None, stderr=subprocess.PIPE, timeout=None):
+def run_command(
+    cmd: List[str],
+    container_name: Optional[str] = None,
+    check: bool = True,
+    stdout=None,
+    stderr=subprocess.PIPE,
+    timeout: Optional[int] = None
+) -> subprocess.CompletedProcess:
+
+    # Prepend docker exec if a container is specified
+    if container_name:
+        docker_prefix = ["docker", "exec", container_name]
+        cmd = docker_prefix + cmd
+
     try:
         logger.debug(f'Executing: {" ".join(cmd)}')
         result = subprocess.run(

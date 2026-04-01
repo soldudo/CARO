@@ -178,9 +178,8 @@ if __name__ == "__main__":
                 "prompt": loc_prompt,
                 "agent": agent,
                 "run_mode": "loc",
-                "resume_flag": is_resume,
+                "is_resume": is_resume,
                 "resume_session_id": resume_id,
-                "patch_url": patch_url,
             }
 
             try:
@@ -242,9 +241,8 @@ if __name__ == "__main__":
             "agent": agent,
             "run_mode": "patch",
             "loc_run_id": current_loc_run_id,
-            "resume_flag": is_resume,
+            "is_resume": is_resume,
             "resume_session_id": resume_id,
-            "patch_url": patch_url,
         }
 
         try:
