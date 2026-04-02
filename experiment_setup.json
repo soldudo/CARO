@@ -1,10 +1,11 @@
 {
-    "arvo_id": 424242614,
+    "experiment_tag": "baseline-patch-envmd",
+    "arvo_id": 42531667,
     "container_name": "rootainer",
     "agent": "claude",
     "is_loc_mode": false,
     "is_patch_mode": true,
-    "loc_run_id": "arvo-424242614-vul1772644045",
+    "loc_run_id": "",
     "is_resume": false,
     "resume_id": ""
 }

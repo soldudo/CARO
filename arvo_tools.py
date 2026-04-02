@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -211,6 +212,37 @@ def initial_setup(arvo_id: int, fix_flag: str = 'vul'):
     cleanup_container(container)
     return container, log_file, fs_dir
 
+def push_md_dict_to_container(files_dict: dict, container_name: str):
+    # Writes a dictionary of files to a temporary folder and uses docker_copy to move them into container.
+    
+    # 1. Create a temporary directory that automatically deletes itself
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        temp_path = Path(temp_dir_name)
+        
+        # 2. Extract the dictionary and write the files to the temporary folder
+        for filename, file_content in files_dict.items():
+            file_path = temp_path / filename
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(file_content)
+                
+        # 3. Prepare the source path for your helper function
+        # Adding '/.' tells Docker to copy the CONTENTS of the folder, not the folder itself
+        source_path = f"{temp_dir_name}/."
+        
+        # 4. Call your existing project helper!
+        try:
+            docker_copy(
+                container_name=container_name, 
+                src_path=source_path, 
+                dest_path='/opt/agent/', 
+                container_source_flag=False  # False because we are copying TO the container
+            )
+            logger.info(f'markdown files successfully exported to {container_name}.')
+            
+        except Exception as e:
+            logger.error(f"Failed to copy files using docker_copy helper: {e}")
+            
+
 def get_original(arvo_id: int, project:str, file_path: str):
     image = f'n132/arvo:{arvo_id}-vul'
     
@@ -238,7 +270,7 @@ def get_container_cat(container_name: str, file_path: str):
     except subprocess.CalledProcessError:
         logger.warning(f'File not found in continer: {file_path}')
         return None
-    
+
 # Running arvo_tools.py as main is currently disabled due to malfunction
 # Code remains for convenience if debug testing is required
 

@@ -3,6 +3,7 @@ import logging
 import re
 import sqlite3
 from pathlib import Path
+from queries import _get_experiment_id_by_tag
 
 logger = logging.getLogger(__name__)
 
@@ -13,9 +14,19 @@ def init_db():
 
     cursor = conn.cursor()
     try:
+        # table for experiment setup
+        cursor.execute('''CREATE TABLE IF NOT EXISTS experiments (
+            experiment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_tag TEXT UNIQUE NOT NULL,
+            description TEXT,
+            prompt_template TEXT,
+            markdown_json TEXT
+        )''')
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS runs (
                 run_id TEXT PRIMARY KEY,
+                experiment_id INTEGER REFERENCES experiments(experiment_id),
                        
                 run_mode TEXT NOT NULL,
                        
@@ -54,31 +65,23 @@ def init_db():
             )
         ''')
 
-    #     cursor.execute('''ALTER TABLE runs ADD COLUMN run_mode TEXT NOT NULL DEFAULT 'loc'
-    # CHECK (run_mode IN ('loc', 'patch'));
-    #                    ''')
-        
-        # cursor.execute('''ALTER TABLE runs ADD COLUMN prompt TEXT
-        # ''')
-
         # Table for agent messages during run
         cursor.execute('''CREATE TABLE IF NOT EXISTS run_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
-                       event_num INTEGER,
-                       event_type TEXT,
-                       event_text TEXT,
-                       event_usage TEXT,
+            event_num INTEGER,
+            event_type TEXT,
+            event_text TEXT,
+            event_usage TEXT,
             FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
         )''')
 
         # table for patch info and results
         cursor.execute('''CREATE TABLE IF NOT EXISTS patch_data (
             run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
-            experiment_tag TEXT,
             loc_source TEXT,
             is_crash_resolved BOOLEAN,
-            patch_crash_log TEXT            
+            patch_crash_log TEXT
         )''')
 
         conn.commit()
@@ -119,9 +122,16 @@ def parse_agent_run(run_path: Path):
 
     if not agent_output:
         logger.critical(f'CRITICAL: agent log not found in run log. Exiting.')
-        raise ValueError(f'CRITICAL: agent log not found in run log. Exiting.') 
+        raise ValueError(f'CRITICAL: agent log not found in run log. Exiting.')
 
     run_mode = session_start.get('run_mode')
+
+    experiment_tag = session_start.get('experiment_tag')
+    experiment_id = None
+    if experiment_tag:
+        experiment_id = _get_experiment_id_by_tag(experiment_tag)
+        if not experiment_id:
+            logger.warning(f"Experiment tag '{experiment_tag}' not found. Inserting run without ID.")
 
     vuln_id = session_start.get('vuln')
 
@@ -260,10 +270,10 @@ def parse_agent_run(run_path: Path):
         conn = sqlite3.connect(DB_PATH)
         conn.execute("PRAGMA foreign_keys = ON") 
         cursor = conn.cursor()
-        placeholders = ", ".join(["?"] * 29)
+        placeholders = ", ".join(["?"] * 30)
         cursor.execute(f'''
             INSERT INTO runs (
-                run_id, run_mode,
+                run_id, run_mode, experiment_id,
                 vuln_id, timestamp, agent, agent_model, prompt,
                 result, result_json, agent_thought_log, agent_insight_log, duration,
                 total_cost_usd, num_turns, input_total_tokens, output_tokens, total_tokens,
@@ -272,7 +282,7 @@ def parse_agent_run(run_path: Path):
                 command, agent_log
             ) VALUES ({placeholders})
         ''', (
-            run_id, run_mode,
+            run_id, run_mode, experiment_id,
             vuln_id, timestamp_iso, 'claude', agent_model, prompt,
             result, json.dumps(result_json), agent_thought_log, agent_insight_log, duration,
             total_cost_usd, num_turns, input_total_tokens, output_tokens, total_tokens,

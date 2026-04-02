@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 import json
-from typing import Optional
+from typing import Optional, Dict, Any
 from schema import CrashLogType, LegacyRunRecord
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,51 @@ def get_all_runs_data(columns: str, conn: Optional[sqlite3.Connection] = None) -
     finally:
         if should_close:
             conn.close()
-            
+
+def _get_experiment_id_by_tag(experiment_tag: str, conn: Optional[sqlite3.Connection] = None) -> Optional[int]:
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+    try:
+        cursor = conn.execute(
+            "SELECT experiment_id FROM experiments WHERE experiment_tag = ?", 
+            (experiment_tag,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except sqlite3.Error as e:
+        logger.error(f'DB error looking up tag {experiment_tag}: {e}')
+        return None
+    finally:
+        if should_close:
+            conn.close()
+
+def _fetch_experiment_data(experiment_tag: str, columns: str, conn: Optional[sqlite3.Connection] = None) -> Optional[tuple]:
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+    try:
+        experiment_id = _get_experiment_id_by_tag(experiment_tag, conn)
+        if experiment_id is None:
+            logger.error(f'Experiment tag {experiment_tag} not found in db.')
+            return []
+        safe_columns = ", ".join(columns) if isinstance(columns, list) else columns
+        cursor = conn.execute(f'SELECT {safe_columns} FROM experiments WHERE experiment_id = ?', (experiment_id,))
+        data = cursor.fetchall()
+        return data
+    
+    except sqlite3.Error as e:
+        logger.error(f'DB error retrieving {columns} for {experiment_tag}: {e}')
+        return None
+    except Exception as e:
+        logger.error(f'Unexpected error processing {experiment_tag}: {e}')
+        return None
+    finally:
+        if should_close:
+            conn.close()
+
 def _fetch_run_data(run_id: str, columns: str, conn: Optional[sqlite3.Connection] = None) -> Optional[tuple]:
     """
     Helper function to manage connections and fetch specific columns for a run_id.
@@ -70,6 +114,102 @@ def _fetch_run_data(run_id: str, columns: str, conn: Optional[sqlite3.Connection
         if should_close:
             conn.close()
 
+def _update_run(run_id: str, updates: Dict[str, Any], conn: Optional[sqlite3.Connection] = None) -> bool:
+    # updates: A dictionary of column names and their new values (e.g., {'experiment_tag': 'discrete-loc-patch-pairs-fullmd', 'prompt': 'continue'}).
+    # Returns bool: True if the update was successful and affected at least one row, False otherwise.
+
+    if not updates:
+        logger.warning(f"No update data provided for run_id: {run_id}")
+        return False
+
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+
+    try:
+        set_clause = ', '.join([f"{col} = ?" for col in updates.keys()])
+        
+        values = list(updates.values())
+        values.append(run_id) 
+
+        # 3. Execute and Commit
+        query = f"UPDATE runs SET {set_clause} WHERE run_id = ?"
+        cursor = conn.execute(query, values)
+        
+        # CRITICAL: Committing the transaction saves it to the database
+        conn.commit() 
+
+        # Check if any rows were actually updated
+        if cursor.rowcount == 0:
+            logger.warning(f'WARNING: No run found to update for run_id: {run_id}')
+            return False
+            
+        return True
+
+    except sqlite3.Error as e:
+        logger.error(f'DB error updating {run_id}. Data: {updates}. Error: {e}')
+        # Roll back any partial changes if an error occurs
+        if conn:
+            conn.rollback() 
+        return False
+        
+    finally:
+        if should_close:
+            conn.close()
+
+def insert_experiment(experiment_tag, description, prompt_template, markdown_json, conn: Optional[sqlite3.Connection] = None):
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+    
+    try:
+        cursor = conn.execute(f'''
+            INSERT into experiments(
+                experiment_tag, description, prompt_template, markdown_json
+            ) VALUES (?, ?, ?, ?)
+        ''', (
+            experiment_tag, description, prompt_template, markdown_json
+        ))
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Error inserting experiment: {e}")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_experiment_artifacts(experiment_tag: str, conn: Optional[sqlite3.Connection] = None):
+    try:
+        rows = _fetch_experiment_data(experiment_tag, 'prompt_template, markdown_json', conn)
+        if not rows:
+            logger.error(f'No data found for experiment type {experiment_tag}')
+            return None
+        prompts_str, markdowns_str = rows[0]
+        # 3. Parse Dictionary 1 (Parameters)
+        prompts_dict = {}
+        if prompts_str:
+            try:
+                prompts_dict = json.loads(prompts_str)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse prompt_templates JSON for experiment type {experiment_tag}: {e}")
+
+        # 4. Parse Dictionary 2 (Metrics)
+        markdowns_dict = {}
+        if markdowns_str:
+            try:
+                markdowns_dict = json.loads(markdowns_str)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse markdowns JSON for experiment type {experiment_tag}: {e}")
+
+        # 5. Return both (they will be empty {} if they were NULL or corrupted)
+        return prompts_dict, markdowns_dict
+        
+    except Exception as e:
+        logger.error(f"Unexpected error retrieving artifacts for experiment type {experiment_tag}: {e}")
+        return None
+
 # WARNING: 
     # ARVO's crash output field is sometimes truncated ie 42513136
     # Recommend manually fuzzing using command: arvo
@@ -87,222 +227,11 @@ def get_context(id: int) -> tuple:
         cursor.close()
         conn.close()
 
-# TODO: change init to include on delete cascade
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys = ON")
-
-    cursor = conn.cursor()
-    try:
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS runs (
-                run_id TEXT PRIMARY KEY,
-                vuln_id INTEGER NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                workspace_relative TEXT,
-                patch_url TEXT,
-                prompt TEXT,
-                duration REAL,
-                input_tokens INTEGER,
-                cached_input_tokens INTEGER,
-                output_tokens INTEGER,
-                total_tokens INTEGER,
-                agent TEXT,
-                agent_model TEXT,
-                resume_flag BOOLEAN,
-                resume_id TEXT,
-                agent_log TEXT,
-                agent_reasoning TEXT,
-                crash_log_original TEXT,
-                crash_log_patch TEXT,
-                crash_resolved BOOLEAN,                
-                caro_log TEXT,
-                FOREIGN KEY (vuln_id) REFERENCES arvo(localId)
-            )
-        ''')
-
-        # Table for File Changes (One-to-Many relationship with runs)
-        cursor.execute('''CREATE TABLE IF NOT EXISTS run_files (
-            file_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT,
-            file_path TEXT,
-            patched_content TEXT,
-            original_file_id INTEGER,
-            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
-        )''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS original_files (
-            original_file_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vuln_id INTEGER NOT NULL,
-            file_path TEXT NOT NULL,
-            original_content TEXT,
-            ground_truth_content TEXT,
-            FOREIGN KEY (vuln_id) REFERENCES arvo(localId)
-            UNIQUE(vuln_id, file_path)
-        )''')
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
-
-
-# This depreciated function logs codex patching runs which are not germane to this branch
-def record_run(run_data: LegacyRunRecord):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    try:
-        cursor.execute('''
-            INSERT INTO runs (
-                run_id, vuln_id, workspace_relative, patch_url,
-                prompt, duration, input_tokens, cached_input_tokens,
-                output_tokens, total_tokens, agent, agent_model,
-                resume_flag, resume_id, agent_log, agent_reasoning
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            run_data.run_id, run_data.vuln_id, run_data.workspace_relative,
-            run_data.patch_url, run_data.prompt, run_data.duration, run_data.input_tokens,
-            run_data.cached_input_tokens, run_data.output_tokens, run_data.total_tokens,
-            run_data.agent, run_data.agent_model, run_data.resume_flag, 
-            run_data.resume_id, run_data.agent_log, run_data.agent_reasoning
-        ))
-        for filepath in run_data.modified_files:
-            cursor.execute('''
-                INSERT INTO run_files (run_id, file_path)
-                VALUES (?, ?)
-            ''', (run_data.run_id, filepath))
-            cursor.execute('''
-                INSERT OR IGNORE INTO original_files (vuln_id, file_path)
-                VALUES (?, ?)
-            ''', (run_data.vuln_id, filepath))
-            #
-            cursor.execute("""
-                SELECT original_file_id FROM original_files 
-                WHERE vuln_id = ? AND file_path = ?
-            """, (run_data.vuln_id, filepath))
-    
-            result = cursor.fetchone()
-            if not result:
-                logger.error(f'Error: Could not retrieve original_file_id')
-            original_file_id = result[0]
-
-            # Step 4: Link the run to this original file
-            cursor.execute("""
-                UPDATE run_files
-                SET original_file_id = ?
-                WHERE run_id = ? AND file_path = ?
-            """, (original_file_id, run_data.run_id, filepath))
-            
-            if cursor.rowcount == 0:
-                logger.warning(f"Could not link original file. No entry in run_files for {filepath}")
-
-        conn.commit()
-    except sqlite3.IntegrityError as e:
-        logger.error(f"Error: run_id {run_data.run_id} already exits in db: {e}")
-
-    finally:
-        cursor.close()
-        conn.close()
-
-# This has been separated into three functions and updated to new db schema
-# def insert_content(run_id:str, file_path:str, kind: ContentType, content: str):
-#     conn = sqlite3.connect(DB_PATH)
-#     conn.execute("PRAGMA foreign_keys = ON")
-
-#     try:
-#         if kind == ContentType.PATCHED:
-#             _update_patched_
-
-
-#     if not target_col:
-#         logger.error(f"Invalid content type: {kind}")
-#         raise ValueError(f"Invalid content type: {kind}")
-    
-#     try:
-#         logger.info(f'Updating... \nrun: {run_id}\npath: {file_path}')
-#         query = f'''
-#             UPDATE run_files
-#             SET {target_col} = ?
-#             WHERE run_id = ? AND file_path = ?
-#         '''
-#         cursor.execute(query, (content, run_id, file_path))
-
-#         if cursor.rowcount == 0:
-#             logger.error(f"Warning: No record found for {file_path} in run {run_id}. Content not saved.")
-#         else:
-#             logger.info(f"Updated {target_col} for {file_path}")
-
-#         conn.commit()
-#     finally:
-#         cursor.close()
-#         conn.close()
-
-def insert_crash_log(run_id: str, kind: CrashLogType, crash_log: str):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys = ON")
-    cursor = conn.cursor()
-
-    col_map = {
-        CrashLogType.ORIGINAL: "crash_log_original",
-        CrashLogType.PATCH: "crash_log_patch"
-    }
-
-    target_col = col_map.get(kind)
-    if not target_col:
-        logger.error(f"Invalid crash log type: {kind}")
-        raise ValueError(f"Invalid crash log type: {kind}")
-    
-    try:
-        query = f'''
-            UPDATE runs
-            SET {target_col} = ?
-            WHERE run_id = ?
-        '''
-        cursor.execute(query, (crash_log, run_id))
-
-        if cursor.rowcount == 0:
-            logger.error(f"Warning: No run found with ID {run_id}. Crash log not saved.")
-        else:
-            logger.info(f"Updated {target_col} for run {run_id}")
-
-        conn.commit()
-    except sqlite3.IntegrityError as e:
-        logger.error(f"Database error for run_id {run_id}: {e}")
-    finally:
-        cursor.close()
-        conn.close()
-
 def get_vuln_id(run_id: str, conn: Optional[sqlite3.Connection] = None):
     return _fetch_run_data(run_id, 'vuln_id', conn)
 
 def get_result_json(run_id: str, conn: Optional[sqlite3.Connection] = None):
     return _fetch_run_data(run_id, 'result_json, vuln_id', conn)
-
-def get_crash_log(run_id: str, kind: CrashLogType = CrashLogType.PATCH, conn: Optional[sqlite3.Connection] = None):
-    should_close = False
-    col_map = {
-        CrashLogType.ORIGINAL: "crash_log_original",
-        CrashLogType.PATCH: "crash_log_patch"
-    }
-    target_col = col_map.get(kind)
-    if not target_col:
-        logger.error(f"Invalid crash log type: {kind}")
-        raise ValueError(f"Invalid crash log type: {kind}")
-
-    if conn is None:
-        conn = _get_connection()
-        should_close = True
-    try:
-        cursor = conn.execute(f'SELECT {target_col} FROM runs WHERE run_id = ?', (run_id,))
-        row = cursor.fetchone()
-        if row is None:
-            logger.warning(f'WARNING: No run found with id: {run_id}')
-            return None
-        return row[0]
-    except sqlite3.Error as e:
-        logger.error(f'db error retrieving {target_col} for {run_id}')
-        return None
-    finally:
-        if should_close:
-            conn.close()
 
 def get_original_crash_log(arvo_id: int):
     conn = sqlite3.connect(DB_PATH)
@@ -405,6 +334,13 @@ def get_agent_trace(run_id: str, conn: Optional[sqlite3.Connection]=None):
     finally:
         if should_close:
             conn.close() 
+
+def update_run_experiment_by_tag(run_id: str, experiment_tag: str, conn: Optional[sqlite3.Connection] = None):
+    experiment_id = _get_experiment_id_by_tag(experiment_tag, conn)
+    if not experiment_id:
+        logger.warning(f"Experiment tag '{experiment_tag}' not found.")
+        return False
+    return _update_run(run_id, {'experiment_id': experiment_id}, conn)   
 
 
 def update_agent_log(run_id: str, agent_log_path: str):
@@ -608,25 +544,3 @@ def remove_run(run_id: str, conn: Optional[sqlite3.Connection] = None):
     finally:
         if should_close:
             conn.close()
-
-# if __name__ == "__main__":
-
-    # experiment_run = 'arvo-40096184-vul-1767674103'
-    # remove_run(experiment_run)
-
-
-    # with open('./crash_log_patch.log', 'r', encoding='utf-8') as f:
-    #     crash_log = f.read()
-    # insert_crash_log(experiment_run, CrashLogType.PATCH, crash_log)
-    # update_crash_resolved(experiment_run, True)
-    # with open('./crash_log_original.log', 'r', encoding='utf-8') as f:
-    #     crash_log = f.read()
-    # insert_crash_log(experiment_run, CrashLogType.ORIGINAL, crash_log)
-
-    # conn = sqlite3.connect(DB_PATH)
-    # cursor = conn.cursor()
-    # cursor.execute('DELETE FROM implicated_files where run_id = ?', (experiment_run,))
-
-    # conn.commit()
-    # cursor.close()
-    # conn.close()

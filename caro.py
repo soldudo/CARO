@@ -2,11 +2,13 @@ import argparse
 import logging
 import json
 import os
+import tempfile
 import sys
 from pathlib import Path
 import time
-from queries import get_context, update_caro_log, get_result_json
+from queries import get_context, update_caro_log, get_result_json, get_experiment_artifacts
 from agent_tools import conduct_run
+from arvo_tools import push_md_dict_to_container
 from run_parser import parse_agent_run
 
 logging.basicConfig(
@@ -50,6 +52,7 @@ if __name__ == "__main__":
     caro_log_path = caro_dir / 'caro.log'
 
     experiment_params = load_config(args.config)
+    experiment_tag = experiment_params.get('experiment_tag')
     vuln_id = experiment_params.get('arvo_id')
     container_name = experiment_params.get('container_name', 'rootainer')
     agent = experiment_params.get('agent', 'claude')
@@ -64,12 +67,15 @@ if __name__ == "__main__":
         logger.critical(arvoId_error)
         raise ValueError(arvoId_error)
 
+    prompts_dict, markdowns_dict = get_experiment_artifacts(experiment_tag)
+
+    push_md_dict_to_container(markdowns_dict, container_name)
+
     # If patching run either need to localize first, or have loc_run_id or be resuming a previous session (presumably with that context)
     if is_patch_mode and not (is_loc_mode or loc_run_id):
         if not is_resume:
-            missing_loc_run_id_error = f'ERROR: Missing run_id for location context (and session not resumed from prev state)'
-            logger.critical(missing_loc_run_id_error)
-            raise ValueError(missing_loc_run_id_error)
+            missing_loc_run_id_error = f'Warning: Missing run_id for location context (and session not resumed from prev state). If experiment should have localization context please correct settings and re-run.'
+            logger.warning(missing_loc_run_id_error)
         else:
             logger.warning('WARNING: localization result not provided. Cannot verify it was passed previously to resumed state.')
     
@@ -127,6 +133,7 @@ if __name__ == "__main__":
                 logger.warning('Experiment proceeding since localization mode enabled. Previous loc context discarded due to vuln_id mismatch. Generating new localization context.')
 
     # If flagged execute localization run and then patching run ()
+    current_loc_run_id = None
 
     # localization mode
     if is_loc_mode:
@@ -137,7 +144,11 @@ if __name__ == "__main__":
         else:
             # conduct localization experiment
             if not is_resume:
-                prompt = f'Investigate the memory safety vulnerability causing the crash [{crash_type}] in the {project} project as shown in the opt/agent/crash.log file. Please initialize your environment using the opt/agent/memory_safety_agent.md persona. Use the patterns and checklist provided in the opt/agent/memory_safety_skills.md file. Localize the source causing this crash by providing the relevant files, functions and lines.'
+                raw_loc_prompt = prompts_dict.get('loc')
+                if raw_loc_prompt is None:
+                    logger.error('Error: no localization prompt found')
+                    raise ValueError('Error: no localization prompt found. Experiment failure, exiting..')
+                prompt = eval(f'f"""{raw_loc_prompt}"""')
             else:
                 prompt = 'continue where you left off'
                 # ensure any subsequent patching run doesn't try to continue the used resume session
@@ -146,6 +157,7 @@ if __name__ == "__main__":
             current_loc_run_id = run_id + '-loc'
 
             loc_run_params = {
+                "experiment_tag": experiment_tag,
                 "vuln_id": vuln_id,
                 "run_id": current_loc_run_id,
                 "container_name": container_name,
@@ -155,26 +167,15 @@ if __name__ == "__main__":
                 "is_resume": is_resume,
                 "resume_session_id": resume_id,
             }
-            # loc_run_params = RunParams(
-            #     vuln_id=vuln_id,
-            #     run_id=current_loc_run_id,
-            #     agent=agent,
-            #     run_mode= 'loc', # default localization mode
-            #     prompt=prompt,
-            #     is_resume=is_resume,
-            #     resume_session_id=resume_id
-            # )
+
             logger.info('Conducting localization run')
             logger.debug(f'Run parameters: {loc_run_params}')
 
             try:
-                # TODO Update tables and parse_run to handle loc & patch runs
                 parse_agent_run(conduct_run(**loc_run_params))
                 
                 logger.info('######### CARO Localization Run Complete #########')
 
-                # TODO Update loc_run caro_log
-                # add loc/patch parameter to specify the table to update
                 update_caro_log(run_id=current_loc_run_id, caro_log_path=str(caro_log_path))
 
             except Exception as e:
@@ -185,50 +186,34 @@ if __name__ == "__main__":
 
         if not is_resume:
             if not loc_context:
-                logger.info('Getting localization context from the localization run that just completed.')
-                current_loc_result = get_result_json(current_loc_run_id)
-                if current_loc_result:
-                        loc_context = json.loads(current_loc_result[0])
-                        loc_run_id = current_loc_run_id
-            # remove confidence scores (arbitrary and we're not asking for related behavior)
-            logger.debug('Removing confidence scores from localization context')
-            for vuln in loc_context.get('vulnerabilities', []):
-                vuln.pop("confidence_score", None)
-                prompt = f'Investigate the memory safety vulnerability causing the crash [{crash_type}] in the {project} project as shown in the opt/agent/crash.log file. Please initialize your environment using the opt/agent/memory_safety_agent.md persona. Use the patterns and checklist provided in the opt/agent/memory_safety_skills.md file. Localize the source causing this crash by providing the relevant files, functions and lines.'
+                if current_loc_run_id is not None:
+                    logger.info('Getting localization context from the localization run that just completed.')
+                    current_loc_result = get_result_json(current_loc_run_id)
+                    if current_loc_result:
+                            loc_context = json.loads(current_loc_result[0])
+                            loc_run_id = current_loc_run_id
+                else:
+                    logger.info('No localization context available.')
 
-            # Add patching prompt here
-            prompt = f'''Fix the root cause of the memory safety vulnerability causing the crash [{crash_type}] in the {project} project. The crash log can be found at opt/agent/crash.log.
-            The following JSON contains localized vulnerability findings.
+            if loc_context:        
+                # remove confidence scores (arbitrary and we're not asking for related behavior)
+                logger.debug('Removing confidence scores from localization context')
+                if loc_context:
+                    for vuln in loc_context.get('vulnerabilities', []):
+                        vuln.pop("confidence_score", None)
 
-            {json.dumps(loc_context, indent=2)}
-            
-            For each entry in the vulnerabilities array:
-            1. Read the cited file and examine the specified lines
-            2. Apply a minimal fix addressing the root cause in the summary
-            3. If the summary references a correctly-handled parallel code path, mirror that approach
-
-            Produce a separate .diff per file. Do not combine fixes across 
-            different files.
-
-            Please initialize your environment using the opt/agent/patch_agent.md persona. Use the patterns provided in the opt/agent/patch_skills.md file.
-            '''
+            # patch prompt
+            raw_patch_prompt = prompts_dict.get('patch')
+            if raw_patch_prompt is None:
+                logger.error('Error: no patch prompt found')
+                raise ValueError('Error: no patch prompt found. Experiment failure, exiting..')
+            prompt = eval(f'f"""{raw_patch_prompt}"""')
+        
         else:
             prompt = 'continue where you left off'
-        
-
-        # patch_run_prams = RunParams(
-
-        #     vuln_id=vuln_id,
-        #     run_id = run_id + '-patch',
-        #     agent=agent,
-        #     run_mode = 'patch',
-        #     loc_run_id=loc_run_id,
-        #     prompt=prompt,
-        #     is_resume=is_resume,
-        #     resume_session_id=resume_id
-        # )
 
         patch_run_prams = {
+            "experiment_tag": experiment_tag,
             "vuln_id": vuln_id,
             "run_id": run_id + '-patch',
             "container_name": container_name,

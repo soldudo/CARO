@@ -2,12 +2,31 @@
 
 **CARO** localization branch readme
 
-### Update 2026-03-18
-* Full localization, patching and logging cycle operational.
-* Patch markdown files added - copy patch_agent/skill.md to rootainer/opt/agent
-* run_parser updated and now sends patch runs to db
-* patch_data - new table holds patch run_id, localization source (loc_run_id) and has a column to log if patch resolved crash (and patch crash output)
-* run parameters now back to dictionary to support rootainer workers
+## Update 2026-03-31
+* added experiments table
+* run db_experiment_upgrade.py to add experiments table and alter tables:
+* patch_data - remove experiment_tag column (now documented in experiments table)
+* runs - added experiment_id foreign key ()
+* caro will now now fetch loc & patch prompts and markdown artifacts from experiment table for each run
+* experiment_tag - new parameter added to experiment_setup and added to conduct_run parameters
+* added push_md_dict_to_container to arvo_tools for copying markdown files from dictionary to container
+
+
+### experiments table
+* experiment_id - primary key integer (autoincrementing)
+* experiment_tag - unique experiment name (string)
+* description - experiment narrative
+* prompt_template - constant prompt (may include variables for project/crash_type) used across all of this experiment's runs
+* json_markdown - json dictionary containing experiment markdown artifacts like skills and agent file variations (NOTE: the number of items may vary between experiments, but should not change between an experiment's runs)
+
+### load_experiment.py
+Demonstrates how to prepare experiment setup data & artifacts and load into db's experiment table
+
+### new queries
+* _get_experiment_id_by_tag - helper translates between unique experiment tag and db pk integer
+* _update_run - helper takes dictionary of col, values to update in runs
+* insert_experiment - save experiment setup, prompts and markdown artifacts to db
+* update_run_experiment_by_tag - associate a run with an experiment (takes tag, updates fk experiment_id)
 
 ## Preparation (crash log)
 Caro injects a copy of the arvo vulnerability's original crash log from the experiment database.

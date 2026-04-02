@@ -91,7 +91,7 @@ def process_codex_event(event):
 # if flag is true, but id is none, last will be used
 # def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, agent: str, run_mode: str, is_resume: bool = False, resume_session_id: str =None):
 
-def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode, loc_run_id=None, is_resume=False, resume_session_id=None):
+def conduct_run(experiment_tag, vuln_id, run_id, container_name, prompt, agent, run_mode, loc_run_id=None, is_resume=False, resume_session_id=None):
     # vuln_id=run_params.vuln_id
     # run_id=run_params.run_id
     # agent=run_params.agent
@@ -152,6 +152,7 @@ def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode, loc_ru
             'log_type': 'session_start',
             'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
             'timestamp_unix': start_time,
+            'experiment_tag': experiment_tag,
             'vuln': vuln_id,
             'command': command,
             'run_mode': run_mode,
