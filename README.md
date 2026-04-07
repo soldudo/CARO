@@ -10,6 +10,8 @@
 * awaits user input to classify whether patch resolved crash
 * gets original fuzzer crash output from arvo db (disabled generation of new original crash output to avoid possibility this could cause compile errors and impact validity of re-testing POC) to aid analysis 
 * option to re-run POC as some containers only generate valid fuzzer output after several tries
+* switched form git apply to patch for implementing patch
+* handles both GNU and git style diffs (agent alternates between them on runs)
 
 ### other changes
 * added compile_errors column to patch_data table to validate POC test integrity
