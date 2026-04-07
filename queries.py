@@ -158,6 +158,91 @@ def _update_run(run_id: str, updates: Dict[str, Any], conn: Optional[sqlite3.Con
         if should_close:
             conn.close()
 
+def _update_patch_data(run_id: str, updates: Dict[str, Any], conn: Optional[sqlite3.Connection] = None) -> bool:
+    # updates: A dictionary of column names and their new values (e.g., {'experiment_tag': 'discrete-loc-patch-pairs-fullmd', 'prompt': 'continue'}).
+    # Returns bool: True if the update was successful and affected at least one row, False otherwise.
+
+    if not updates:
+        logger.warning(f"No patch_data provided for run_id: {run_id}")
+        return False
+
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+
+    try:
+        set_clause = ', '.join([f"{col} = ?" for col in updates.keys()])
+        
+        values = list(updates.values())
+        values.append(run_id) 
+
+        # 3. Execute and Commit
+        query = f"UPDATE patch_data SET {set_clause} WHERE run_id = ?"
+        cursor = conn.execute(query, values)
+        
+        # CRITICAL: Committing the transaction saves it to the database
+        conn.commit() 
+
+        # Check if any rows were actually updated
+        if cursor.rowcount == 0:
+            logger.warning(f'WARNING: No run found to update for run_id: {run_id}')
+            return False
+            
+        return True
+
+    except sqlite3.Error as e:
+        logger.error(f'DB error updating {run_id}. Data: {updates}. Error: {e}')
+        # Roll back any partial changes if an error occurs
+        if conn:
+            conn.rollback() 
+        return False
+        
+    finally:
+        if should_close:
+            conn.close()
+
+def _update_experiment(experiment_id: int, updates: Dict[str, Any], conn: Optional[sqlite3.Connection] = None) -> bool:
+    if not updates:
+        logger.warning(f"No update data provided for experiment_id: {experiment_id}")
+        return False
+
+    should_close = False
+    if conn is None:
+        conn = _get_connection()
+        should_close = True
+
+    try:
+        set_clause = ', '.join([f"{col} = ?" for col in updates.keys()])
+        
+        values = list(updates.values())
+        values.append(experiment_id) 
+
+        # 3. Execute and Commit
+        query = f"UPDATE experiments SET {set_clause} WHERE experiment_id = ?"
+        cursor = conn.execute(query, values)
+        
+        # CRITICAL: Committing the transaction saves it to the database
+        conn.commit() 
+
+        # Check if any rows were actually updated
+        if cursor.rowcount == 0:
+            logger.warning(f'WARNING: No experiment found to update for experiment_id: {experiment_id}')
+            return False
+            
+        return True
+
+    except sqlite3.Error as e:
+        logger.error(f'DB error updating {experiment_id}. Data: {updates}. Error: {e}')
+        # Roll back any partial changes if an error occurs
+        if conn:
+            conn.rollback() 
+        return False
+        
+    finally:
+        if should_close:
+            conn.close()
+
 def insert_experiment(experiment_tag, description, prompt_template, markdown_json, conn: Optional[sqlite3.Connection] = None):
     should_close = False
     if conn is None:
@@ -342,6 +427,8 @@ def update_run_experiment_by_tag(run_id: str, experiment_tag: str, conn: Optiona
         return False
     return _update_run(run_id, {'experiment_id': experiment_id}, conn)   
 
+def update_patch_crash_results(run_id: str, is_crash_resolved: bool, patch_crash_log: str, compile_errors: str, conn: Optional[sqlite3.Connection] = None):
+    return _update_patch_data(run_id, {'is_crash_resolved': is_crash_resolved, 'patch_crash_log': patch_crash_log, 'compile_errors': compile_errors}, conn)
 
 def update_agent_log(run_id: str, agent_log_path: str):
     conn = sqlite3.connect(DB_PATH)
@@ -404,127 +491,6 @@ def update_caro_log(run_id: str, caro_log_path: str):
     finally:
         cursor.close()
         conn.close()
-
-def update_crash_resolved(run_id: str, resolved: bool, conn: Optional[sqlite3.Connection] = None):
-    # 1. Determine if we own the connection (and thus should close it)
-    should_close = False
-    if conn is None:
-        conn = _get_connection()
-        should_close = True
-    try:
-        with conn:
-            cursor = conn.execute('''
-                UPDATE runs
-                SET crash_resolved = ?
-                WHERE run_id = ?
-            ''', (resolved, run_id))
-            if cursor.rowcount == 0:
-                logger.error(f"Warning: No run found with ID {run_id}. Crash resolved status not updated.")
-            else:
-                logger.info(f"Updated crash_resolved for run {run_id} to {resolved}")
-    except sqlite3.Error as e:
-        logging.error(f"Database error updating run {run_id}: {e}")
-        # Note: 'with conn' automatically rolled back changes if an error occurred inside it.
-        
-    finally:
-        # 3. Only close the connection if we created it locally
-        if should_close:
-            conn.close()
-
-def update_patch(run_id: int, file_path: str, content: str, conn: Optional[sqlite3.Connection] = None):
-    should_close = False
-    if conn is None:
-        conn = _get_connection()
-        should_close = True
-    try:
-        with conn:
-            cursor = conn.execute('''
-                UPDATE run_files
-                SET patched_content = ?
-                WHERE run_id = ? AND file_path = ?
-            ''', (content, run_id, file_path))
-            if cursor.rowcount == 0:
-                logger.error(f"Warning: No record found for {file_path} in run {run_id}. Content not saved.")
-            else:
-                logger.info(f"Updated run {run_id} patched file: {file_path}")
-    except sqlite3.Error as e:
-        logging.error(f"Database error updating run_id {run_id} patched file: {file_path}: {e}")
-        
-    finally:
-        if should_close:
-            conn.close()
-
-def update_original(vuln_id: int, file_path: str, content: str, conn: Optional[sqlite3.Connection] = None):
-    should_close = False
-    if conn is None:
-        conn = _get_connection()
-        should_close = True
-    try:
-        query = '''
-                UPDATE original_files
-                SET original_content = ?
-                WHERE vuln_id = ? AND file_path = ? AND original_content IS NULL
-            '''
-        if should_close:
-            with conn:
-                cursor = conn.execute(query, (content, vuln_id, file_path))
-        else:
-            cursor = conn.execute(query, (content, vuln_id, file_path))
-
-        if cursor.rowcount > 0:
-            logger.info(f"Updated vulnerability {vuln_id} original file: {file_path}")
-        else:
-            check_cur = conn.execute(
-                "SELECT 1 FROM original_files WHERE vuln_id = ? AND file_path = ?",
-            )
-            if check_cur.fetchone():
-                logger.info(f"Skipped update: {file_path} (Vuln {vuln_id}) already has content.")
-            else:
-                logger.warning(f"Warning: Row missing for {file_path} (Vuln {vuln_id}). Cannot update.")
-                
-    except sqlite3.Error as e:
-        logging.error(f"Database error updating vuln {vuln_id} original file: {file_path}: {e}")
-        
-    finally:
-        if should_close:
-            conn.close()
-
-def update_ground_truth(vuln_id: int, file_path: str, content: str, conn: Optional[sqlite3.Connection] = None):
-    should_close = False
-    if conn is None:
-        conn = _get_connection()
-        should_close = True
-    try:
-        query = '''
-                UPDATE original_files
-                SET ground_truth_content = ?
-                WHERE vuln_id = ? AND file_path = ? AND ground_truth_content IS NULL
-            '''
-        if should_close:
-            with conn:
-                cursor = conn.execute(query, (content, vuln_id, file_path))
-        else:
-            cursor = conn.execute(query, (content, vuln_id, file_path))
-        
-        if cursor.rowcount > 0:
-            logger.info(f"Updated vulnerability {vuln_id} ground_truth file: {file_path}")
-        else:
-            check_cur = conn.execute(
-                "SELECT 1 FROM original_files WHERE vuln_id = ? AND file_path = ?",
-                (vuln_id, file_path)
-            )
-            if check_cur.fetchone():
-                logger.info(f"Skipped update: {file_path} (Vuln {vuln_id}) already has content.")
-            else:
-                logger.warning(f"Warning: Row missing for {file_path} (Vuln {vuln_id}). Cannot update.")
-
-           
-    except sqlite3.Error as e:
-        logging.error(f"Database error updating vuln {vuln_id} ground_truth file: {file_path}: {e}")
-        
-    finally:
-        if should_close:
-            conn.close()
 
 def remove_run(run_id: str, conn: Optional[sqlite3.Connection] = None):
     should_close = False

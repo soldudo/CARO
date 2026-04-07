@@ -1,32 +1,21 @@
-# CARO: Code agent ARVO experiment Orchestration
+# CARO: Code Agent Run Orchestration
 
 **CARO** localization branch readme
 
-## Update 2026-03-31
-* added experiments table
-* run db_experiment_upgrade.py to add experiments table and alter tables:
-* patch_data - remove experiment_tag column (now documented in experiments table)
-* runs - added experiment_id foreign key ()
-* caro will now now fetch loc & patch prompts and markdown artifacts from experiment table for each run
-* experiment_tag - new parameter added to experiment_setup and added to conduct_run parameters
-* added push_md_dict_to_container to arvo_tools for copying markdown files from dictionary to container
+## Update 2026-04-07
 
+### diff_tools.py 
+* uses diff result from patch run to patch & re-compile container and re-test POC with fuzzer
+* example call: python diff_tools.py --patch-run-id arvo-42534486-vul-1775194589-patch
+* awaits user input to classify whether patch resolved crash
+* gets original fuzzer crash output from arvo db (disabled generation of new original crash output to avoid possibility this could cause compile errors and impact validity of re-testing POC) to aid analysis 
+* option to re-run POC as some containers only generate valid fuzzer output after several tries
 
-### experiments table
-* experiment_id - primary key integer (autoincrementing)
-* experiment_tag - unique experiment name (string)
-* description - experiment narrative
-* prompt_template - constant prompt (may include variables for project/crash_type) used across all of this experiment's runs
-* json_markdown - json dictionary containing experiment markdown artifacts like skills and agent file variations (NOTE: the number of items may vary between experiments, but should not change between an experiment's runs)
-
-### load_experiment.py
-Demonstrates how to prepare experiment setup data & artifacts and load into db's experiment table
-
-### new queries
-* _get_experiment_id_by_tag - helper translates between unique experiment tag and db pk integer
-* _update_run - helper takes dictionary of col, values to update in runs
-* insert_experiment - save experiment setup, prompts and markdown artifacts to db
-* update_run_experiment_by_tag - associate a run with an experiment (takes tag, updates fk experiment_id)
+### other changes
+* added compile_errors column to patch_data table to validate POC test integrity
+* new queries.py helper functions: _update_experiment and _update_patch_data
+* updated init_db() in run_parser.py with table changes
+* added kwargs to run_command() in arvo_tools.py to enable use of input to pass patch data to container
 
 ## Preparation (crash log)
 Caro injects a copy of the arvo vulnerability's original crash log from the experiment database.
@@ -90,6 +79,13 @@ Set the ARVO vulnerability ID via **`experiment_setup.json`** in the project roo
 After setting an **'arvo_id'** in the **'experiment_setup.json'** run caro.py
 
 ## Run Tables
+### experiments
+* experiment_id - primary key integer (autoincrementing)
+* experiment_tag - unique experiment name (string)
+* description - experiment narrative
+* prompt_template - constant prompt (may include variables for project/crash_type) used across all of this experiment's runs
+* json_markdown - json dictionary containing experiment markdown artifacts like skills and agent file variations (NOTE: the number of items may vary between experiments, but should not change between an experiment's runs)
+  
 ### runs
 * Each row represents a localization or patch experiment run.
 * run_id - unique identifier of a run: arvo-{vulnerability ID#}-vul-{run timestamp}-{run mode}
@@ -112,10 +108,10 @@ Many entries per run store each discrete agent action by type and turn along wit
 
 ### patch_data
 One entry per run stores patch data and logs whether it successfully resolved the crash
-* experiment_tag - use tags to track experiment variations (ie baseline patch with no localization context)
 * loc_source - the localization run id or other description of the context given to agent during this patch run
 * is_crash_resolved - boolean tracks whether the generated patch successfully resolved the crash
 * patch_crash_log - stores the resulting crash (or successful execution) when POC is re-ran after recompiling after patching
+* compile_errors - stderr output of arvo compile command on container. used to validate integrity of testing POC on fuzzer post-patch
 
 ## caro crashes
 If caro crashes with a Keyboard Interrupt message, check your system's storage utilization. Experiments using numerous arvo docker containers result in many dangling docker images taking up large amounts of space and will require regular pruning.

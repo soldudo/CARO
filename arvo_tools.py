@@ -28,13 +28,19 @@ def run_command(
     check: bool = True, 
     stdout=None, 
     stderr=subprocess.PIPE, 
-    timeout: Optional[int] = None
+    timeout: Optional[int] = None,
+    **kwargs
 ) -> subprocess.CompletedProcess:
     
     # Prepend docker exec if a container is specified
     if container_name:
         # Use -i if you plan to pass input via stdin, otherwise just exec is fine
-        docker_prefix = ["docker", "exec", container_name]
+        docker_prefix = ["docker", "exec"]
+
+        if "input" in kwargs and kwargs["input"] is not None:
+            docker_prefix.append("-i")
+            
+        docker_prefix.append(container_name)
         cmd = docker_prefix + cmd
 
     try:
@@ -45,7 +51,8 @@ def run_command(
             stderr=stderr,
             text=True,
             timeout=timeout,
-            check=check
+            check=check,
+            **kwargs
         )
         return result
     except subprocess.CalledProcessError as e:
@@ -132,6 +139,7 @@ def cleanup_dind(container_name: str, rootainer_name: str = 'rootainer'):
 
 def standby_container(container_name: str, vuln_id: int, fix_flag: str = 'vul'):
     stby_cmd = ['docker', 'run', '-d',
+                '--privileged',
                  '--name', container_name,
                  '--entrypoint', 'tail',
                  f'n132/arvo:{vuln_id}-{fix_flag}',

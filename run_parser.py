@@ -81,7 +81,8 @@ def init_db():
             run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
             loc_source TEXT,
             is_crash_resolved BOOLEAN,
-            patch_crash_log TEXT
+            patch_crash_log TEXT,
+            compile_errors TEXT
         )''')
 
         conn.commit()
@@ -319,7 +320,7 @@ def parse_agent_run(run_path: Path):
         cursor.close()
         conn.close()
 
-
+# Run this file directly & uncomment parse_agent_run to manually parse a run specified below
 if __name__ == '__main__':
     logging.basicConfig(
         filename='run_parser.log', 
@@ -329,4 +330,5 @@ if __name__ == '__main__':
     
     logger.info("Script started directly.")
     trace_file = Path('runs/arvo-435781342-vul1772638872/agent_arvo-435781342-vul1772638872.log')
-    parse_agent_run(trace_file)
+    
+    # parse_agent_run(trace_file)
