@@ -3,8 +3,10 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from typing import List, Optional
 from queries import get_context
 
 logger = logging.getLogger(__name__)
@@ -20,7 +22,27 @@ def setup_logger():
         ]
     )
 
-def run_command(cmd, check=True, stdout=None, stderr=subprocess.PIPE, timeout=None):
+def run_command(
+    cmd: List[str], 
+    container_name: Optional[str] = None, 
+    check: bool = True, 
+    stdout=None, 
+    stderr=subprocess.PIPE, 
+    timeout: Optional[int] = None,
+    **kwargs
+) -> subprocess.CompletedProcess:
+    
+    # Prepend docker exec if a container is specified
+    if container_name:
+        # Use -i if you plan to pass input via stdin, otherwise just exec is fine
+        docker_prefix = ["docker", "exec"]
+
+        if "input" in kwargs and kwargs["input"] is not None:
+            docker_prefix.append("-i")
+            
+        docker_prefix.append(container_name)
+        cmd = docker_prefix + cmd
+
     try:
         logger.debug(f'Executing: {" ".join(cmd)}')
         result = subprocess.run(
@@ -29,7 +51,8 @@ def run_command(cmd, check=True, stdout=None, stderr=subprocess.PIPE, timeout=No
             stderr=stderr,
             text=True,
             timeout=timeout,
-            check=check
+            check=check,
+            **kwargs
         )
         return result
     except subprocess.CalledProcessError as e:
@@ -39,12 +62,14 @@ def run_command(cmd, check=True, stdout=None, stderr=subprocess.PIPE, timeout=No
     except subprocess.TimeoutExpired as e:
         logger.error(f'Command timed out: {e}')
         raise
-
+    
+# TODO: Remove this feature
 def make_fs(container_name: str):
     fs_dir = os.path.join(os.getcwd(), 'scratch_fs', container_name)
     os.makedirs(fs_dir, exist_ok=True)
     return fs_dir
 
+# TODO: Retire pull_call and verify log isn't cluttered 
 # change fix_flag to 'fix' to load the patched container
 def load_container(arvo_id: int, fix_flag: str = 'vul'):
     # pull container first for concise crash_log
@@ -104,8 +129,17 @@ def cleanup_container(container_name: str):
     cmd = ['docker', 'rm', '-f', container_name]
     run_command(cmd, check=False)
 
+def cleanup_dind(container_name: str, rootainer_name: str = 'rootainer'):
+    logger.debug(f"Cleaning up container {container_name} in container {rootainer_name}")
+    root_cmd = ['docker', 'exec', rootainer_name]
+    target_cmd = ['docker', 'rm', '-f', container_name]
+    full_cmd = root_cmd + target_cmd
+    run_command(full_cmd, check=False)
+
+
 def standby_container(container_name: str, vuln_id: int, fix_flag: str = 'vul'):
     stby_cmd = ['docker', 'run', '-d',
+                '--privileged',
                  '--name', container_name,
                  '--entrypoint', 'tail',
                  f'n132/arvo:{vuln_id}-{fix_flag}',
@@ -113,6 +147,20 @@ def standby_container(container_name: str, vuln_id: int, fix_flag: str = 'vul'):
     ]
     logger.debug(f"Starting standby container {container_name}")
     run_command(stby_cmd)
+
+def standby_dind(container_name: str, vuln_id: int, fix_flag: str = 'vul'):
+    dind_cmd = ['docker', 'exec', 'rootainer']
+    stby_cmd = ['docker', 'run', '-d',
+                 '--name', container_name,
+                 '--entrypoint', 'tail',
+                 f'n132/arvo:{vuln_id}-{fix_flag}',
+                 '-f', '/dev/null'
+    ]
+    logger.debug(f"Starting standby container in rootainer {container_name}")
+    full_cmd = dind_cmd + stby_cmd
+    run_command(full_cmd)
+
+
 
 def recompile_container(container_name: str):
     KEEP_LINES = 20
@@ -172,6 +220,37 @@ def initial_setup(arvo_id: int, fix_flag: str = 'vul'):
     cleanup_container(container)
     return container, log_file, fs_dir
 
+def push_md_dict_to_container(files_dict: dict, container_name: str):
+    # Writes a dictionary of files to a temporary folder and uses docker_copy to move them into container.
+    
+    # 1. Create a temporary directory that automatically deletes itself
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        temp_path = Path(temp_dir_name)
+        
+        # 2. Extract the dictionary and write the files to the temporary folder
+        for filename, file_content in files_dict.items():
+            file_path = temp_path / filename
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(file_content)
+                
+        # 3. Prepare the source path for your helper function
+        # Adding '/.' tells Docker to copy the CONTENTS of the folder, not the folder itself
+        source_path = f"{temp_dir_name}/."
+        
+        # 4. Call your existing project helper!
+        try:
+            docker_copy(
+                container_name=container_name, 
+                src_path=source_path, 
+                dest_path='/opt/agent/', 
+                container_source_flag=False  # False because we are copying TO the container
+            )
+            logger.info(f'markdown files successfully exported to {container_name}.')
+            
+        except Exception as e:
+            logger.error(f"Failed to copy files using docker_copy helper: {e}")
+            
+
 def get_original(arvo_id: int, project:str, file_path: str):
     image = f'n132/arvo:{arvo_id}-vul'
     
@@ -199,7 +278,7 @@ def get_container_cat(container_name: str, file_path: str):
     except subprocess.CalledProcessError:
         logger.warning(f'File not found in continer: {file_path}')
         return None
-    
+
 # Running arvo_tools.py as main is currently disabled due to malfunction
 # Code remains for convenience if debug testing is required
 

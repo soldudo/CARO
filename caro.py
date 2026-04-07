@@ -1,34 +1,34 @@
+import argparse
 import logging
 import json
 import os
-import shutil
+import tempfile
 import sys
 from pathlib import Path
 import time
-from queries import get_context, insert_crash_log, update_caro_log, get_crash_log, get_resume_id, update_patch, update_original, update_ground_truth
+from queries import get_context, update_caro_log, get_result_json, get_experiment_artifacts
 from agent_tools import conduct_run
-from arvo_tools import initial_setup, recompile_container, refuzz, standby_container, docker_copy, cleanup_container, get_original, get_container_cat
-from commit_files import download_commit_files
-from schema import CrashLogType, ContentType
-
+from arvo_tools import push_md_dict_to_container
+from run_parser import parse_agent_run
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(name)s] - %(message)s',
     handlers=[
-        logging.FileHandler("caro.log", mode='a'),
+        logging.FileHandler("caro.log", mode='w'), # recommend mode='w' otherwise multiple run logs will be stored for one run in db
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
-def load_config():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(base_dir, 'experiment_setup.json')
+def load_config(config_path=None):
+    if config_path is None:
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(base_dir, 'experiment_setup.json')
 
     if not os.path.exists(config_path):
         logger.critical(f"Config file not found at {config_path}")
-        print(f"CRITICAL: Config file not found at {config_path}")
         sys.exit(1)
 
     try:
@@ -39,181 +39,199 @@ def load_config():
             
     except json.JSONDecodeError as e:
         logger.critical(f"JSON file is corrupt or invalid: {e}")
-        print(f"CRITICAL: JSON file is corrupt or invalid.\nError details: {e}")
         sys.exit(1)
 
-def collect_modified_files(modified_files, workspace, run_path, initial_prompt):
-    for mod_file in modified_files:
-        mod_filepath = Path(mod_file)
-        if mod_filepath.exists():
-            try:
-                relative_path = mod_filepath.relative_to(workspace)
-                # TODO: verify the next line's behavior is as intended
-                flat_name = str(relative_path).replace('/', '__').replace('\\', '__')
-                if initial_prompt:
-                    new_name = f'{flat_name}-patch1' 
-                else:
-                    new_name = f'{flat_name}-patch2'
-                dest_path = run_path / new_name
-                shutil.copy2(mod_filepath, dest_path)
-                logger.info(f'Copied modified file {mod_filepath} to {dest_path}')
-            except Exception as e:
-                logger.error(f'Error copying modified file {mod_filepath}: {e}')
-
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default=None, help='Path to experiment config JSON')
+    args = parser.parse_args()
     patch_url = None
     logger.info('######### Starting CARO Experiment Run #########')
-    experiment_params = load_config()
-    vuln_id = experiment_params.get('arvo_id')
-    container_name = experiment_params.get('container_name')
-    initial_prompt = experiment_params.get('initial_prompt') # flag
-    agent = experiment_params.get('agent', 'codex')
-    resume_flag = experiment_params.get('resume_flag', False) 
     
-    # Defining the run name (previously container) using arvo-vuln_id-vuln_flag-timestamp
-    run_id = f'arvo-{vuln_id}-vul{int(time.time())}'
+    caro_dir = Path(__file__).parent
+    caro_log_path = caro_dir / 'caro.log'
+
+    experiment_params = load_config(args.config)
+    experiment_tag = experiment_params.get('experiment_tag')
+    vuln_id = experiment_params.get('arvo_id')
+    container_name = experiment_params.get('container_name', 'rootainer')
+    agent = experiment_params.get('agent', 'claude')
+    is_loc_mode = experiment_params.get('is_loc_mode', True)
+    is_patch_mode = experiment_params.get('is_patch_mode', False)
+    loc_run_id = experiment_params.get('loc_run_id', None)
+    is_resume = experiment_params.get('is_resume', False) 
+    resume_id = experiment_params.get('resume_id', None)
+
+    if not vuln_id or not isinstance(vuln_id, int):
+        arvoId_error = f'ERROR: Invalid arvo vulnerability id: {vuln_id}'
+        logger.critical(arvoId_error)
+        raise ValueError(arvoId_error)
+
+    prompts_dict, markdowns_dict = get_experiment_artifacts(experiment_tag)
+
+    push_md_dict_to_container(markdowns_dict, container_name)
+
+    # If patching run either need to localize first, or have loc_run_id or be resuming a previous session (presumably with that context)
+    if is_patch_mode and not (is_loc_mode or loc_run_id):
+        if not is_resume:
+            missing_loc_run_id_error = f'Warning: Missing run_id for location context (and session not resumed from prev state). If experiment should have localization context please correct settings and re-run.'
+            logger.warning(missing_loc_run_id_error)
+        else:
+            logger.warning('WARNING: localization result not provided. Cannot verify it was passed previously to resumed state.')
+    
+    # Definine the run name (previously container) as arvo-vuln_id-vuln_flag-timestamp
+    run_id = f'arvo-{vuln_id}-vul-{int(time.time())}'
+    logger.info(f'Experiment assigned run_id: {run_id}')
 
     # Get project and crash type from ARVO.db
     project, crash_type, patch_url = get_context(vuln_id)
-    logger.info(f"Experiment setup for ARVO ID {vuln_id}: project={project}, crash_type={crash_type}, patch_url={patch_url}, initial_prompt={initial_prompt}, resume_flag={resume_flag}")
+    logger.info(f"Experiment setup for ARVO ID {vuln_id}: project={project}, crash_type={crash_type}, patch_url={patch_url}")
     # Does not check for patch url which isn't critical to execution
     if project is None or crash_type is None: 
         context_error = f"ERROR: Missing context - project is {project} and crash_type is {crash_type} for ID {vuln_id}. Execution aborted."
         logger.error(context_error)
         raise ValueError(context_error)
+    
+    # Warning in case localization to be performed, but previous result also supplied
+    if is_loc_mode and loc_run_id:
+        logger.warning(f'WARNING: caro running in localization mode, but a previous loc result was also provided.')
 
-    # Use experiment_setup.json to indicate if this is an initial prompt
-    if initial_prompt:
-        # localization only prompt
-        prompt = f'Investigate the memory safety vulnerability causing the {crash_type} in the {project} project. Please initialize your environment using the memory_safety_agent.md persona. Use the patterns and checklist provided in the memory_skills.md file. Localize the source causing this crash by providing the file(s) function(s) and line(s).'
+    # get localization context from db if patching enabled and previous run_id entered
+    loc_context = None
+    if is_patch_mode and loc_run_id:
 
-        # patch the vulnerability prompt
-        # prompt = f'Use the vulnerability localization analysis found in agent_analysis.txt to fix the memory safety vulnerability causing the {crash_type} in the {project} project. Please initialize your environment using the memory_safety_agent.md persona. Use the patterns provided in the memory_skills.md file. Provide the lines of code and file locations changed in this task. '
+        db_loc_result = get_result_json(loc_run_id)
 
-        # conduct the experiment
-        modified_files = conduct_run(vuln_id=vuln_id, run_id=run_id, container_name=container_name, prompt=prompt, agent=agent, resume_flag=False, patch_url=patch_url)
+        is_context_valid = False
+        loc_error_msg = ''
 
-        # copy original versions of modified files to db
-        for m_file in modified_files:
-            logger.info(f'Getting cat for m_file: {m_file}')
-            content = get_container_cat(container_name, m_file)
-            # update db with patch content
-            logger.info(f'updating {run_id}\nfile {m_file}')
-            update_patch(run_id=run_id, file_path=str(m_file), content=content)
+        if db_loc_result is None:
+            loc_error_msg = f'No localization result found in DB for run_id: {loc_run_id}'
+        # If fetched vuln_id does not match experiment's vuln_id 
+        elif db_loc_result[1] != vuln_id:
+            loc_error_msg = f'Provided run_id {loc_run_id} fetched vuln_id: {db_loc_result[1]} which does not match experiment\'s vuln_id: {vuln_id}'
+        
+        else:
+            loc_context = json.loads(db_loc_result[0])
+            loc_error_msg = f'Localization result for DB run_id {loc_run_id} is empty.'
+            if loc_context:
+                # Found valid context
+                logger.info(f'Successfully loaded previous run {loc_run_id} localization context.')
+                logger.debug(loc_context)
+                is_context_valid = True
+                # remove confidence scores (arbitrary and we're not asking for related behavior)
+                logger.debug('Removing confidence scores from previous run loc_context')
+                for vuln in loc_context.get("vulnerabilities", []):
+                    vuln.pop("confidence_score", None)
 
-            original_file = get_original(vuln_id, project, m_file)  
+        if not is_context_valid:
+            logger.error(f'Localization context ERROR: {loc_error_msg}')
 
-            if original_file is None:
-                logger.info(f'{m_file} not found in container, skipping..')
-                continue
+            if not is_loc_mode:
+                raise ValueError(f'Experiment FAILED: {loc_error_msg}')
+            else: 
+                logger.warning('Experiment proceeding since localization mode enabled. Previous loc context discarded due to vuln_id mismatch. Generating new localization context.')
 
-            logger.info(f'File: {m_file}')
-            logger.debug('Excerpt: \n%s', original_file[:300])
-            update_original(vuln_id=vuln_id, file_path=m_file, content=original_file)
-            
-        run_path = Path(__file__).parent / 'runs' / run_id
+    # If flagged execute localization run and then patching run ()
+    current_loc_run_id = None
 
-        # download ground truth from repo commit url
+    # localization mode
+    if is_loc_mode:
+        # if valid localization context fetched, we use that instead of generating new one
+        if loc_context is not None:
+            logger.info(f'Localization context fetched from DB from provided loc_run_id. Skipping localization run. (Remove loc_run_id from experiment_setup.json to ensure new localization run generates.')
+
+        else:
+            # conduct localization experiment
+            if not is_resume:
+                raw_loc_prompt = prompts_dict.get('loc')
+                if raw_loc_prompt is None:
+                    logger.error('Error: no localization prompt found')
+                    raise ValueError('Error: no localization prompt found. Experiment failure, exiting..')
+                prompt = eval(f'f"""{raw_loc_prompt}"""')
+            else:
+                prompt = 'continue where you left off'
+                # ensure any subsequent patching run doesn't try to continue the used resume session
+                is_resume = False
+
+            current_loc_run_id = run_id + '-loc'
+
+            loc_run_params = {
+                "experiment_tag": experiment_tag,
+                "vuln_id": vuln_id,
+                "run_id": current_loc_run_id,
+                "container_name": container_name,
+                "prompt": prompt,
+                "agent": agent,
+                "run_mode": 'loc',
+                "is_resume": is_resume,
+                "resume_session_id": resume_id,
+            }
+
+            logger.info('Conducting localization run')
+            logger.debug(f'Run parameters: {loc_run_params}')
+
+            try:
+                parse_agent_run(conduct_run(**loc_run_params))
+                
+                logger.info('######### CARO Localization Run Complete #########')
+
+                update_caro_log(run_id=current_loc_run_id, caro_log_path=str(caro_log_path))
+
+            except Exception as e:
+                logger.error(f'Error encountered: {e}')
+
+    # patching run
+    if is_patch_mode:
+
+        if not is_resume:
+            if not loc_context:
+                if current_loc_run_id is not None:
+                    logger.info('Getting localization context from the localization run that just completed.')
+                    current_loc_result = get_result_json(current_loc_run_id)
+                    if current_loc_result:
+                            loc_context = json.loads(current_loc_result[0])
+                            loc_run_id = current_loc_run_id
+                else:
+                    logger.info('No localization context available.')
+
+            if loc_context:        
+                # remove confidence scores (arbitrary and we're not asking for related behavior)
+                logger.debug('Removing confidence scores from localization context')
+                if loc_context:
+                    for vuln in loc_context.get('vulnerabilities', []):
+                        vuln.pop("confidence_score", None)
+
+            # patch prompt
+            raw_patch_prompt = prompts_dict.get('patch')
+            if raw_patch_prompt is None:
+                logger.error('Error: no patch prompt found')
+                raise ValueError('Error: no patch prompt found. Experiment failure, exiting..')
+            prompt = eval(f'f"""{raw_patch_prompt}"""')
+        
+        else:
+            prompt = 'continue where you left off'
+
+        patch_run_prams = {
+            "experiment_tag": experiment_tag,
+            "vuln_id": vuln_id,
+            "run_id": run_id + '-patch',
+            "container_name": container_name,
+            "prompt": prompt,
+            "agent": agent,
+            "run_mode": 'patch',
+            "loc_run_id": loc_run_id,
+            "is_resume": is_resume,
+            "resume_session_id": resume_id,
+        }
+        logger.info('Conducting patch run...')
+        logger.debug(f'Run parameters: {patch_run_prams}')
+
         try:
-            ground_truth_files = download_commit_files(patch_url, run_path)
-            # send ground truth files to db
-            for gt_file in ground_truth_files:
-                gt_path = Path(gt_file)
-                logger.debug(f'gt_path{gt_path}')
+            parse_agent_run(conduct_run(**patch_run_prams))
 
-                try:         
-                    relative_path = gt_path.relative_to(run_path)
-                    logger.info(f'relative_path_str: {relative_path}')
-                    truncated_gt_path = Path(*relative_path.parts[1:])  # remove 'grndtrth' folder for db path
-                    logger.info(f'truncated_gt_path for db: {truncated_gt_path}')
+            logger.info('######### CARO Patch Run Complete #########')
+            update_caro_log(run_id=run_id + '-patch', caro_log_path=str(caro_log_path))
 
-                    with open(gt_file, 'r', encoding='utf-8', errors='replace') as f:
-                        content = f.read()
-                        update_ground_truth(vuln_id=vuln_id, file_path=str(truncated_gt_path), content=content)
-                        
-                except ValueError:
-                    logger.error(f'Path error: GT file at {gt_path} is not inside {run_path}')
-
-                except Exception as e:
-                    logger.error(f'Error reading ground truth file {gt_file} for database insertion: {e}')
         except Exception as e:
-            logger.error(f'Skipping download. Error getting commit files from {patch_url}: {e}')
-
-    # TODO: Still needs updated container implementation to match first try run
-    # DO NOT RUN SECOND ATTEMPTS UNTIL THIS IS FIXED!
-    # logic for second attempt at patching
-    else:
-        prompt = 'Your previous fixes did not remove the crash. '
-        # load experiment settings from json
-        resume_id = experiment_params.get('resume_id', None)
-        source_crash_flag = experiment_params.get('source_crash_db', False)
-        run_id_prev = experiment_params.get('run_id', None)
-        source_resume_id = experiment_params.get('source_resume_db', False)
-        crash_log_patch = experiment_params.get('crash_log_patch', None)
-        additional_context = experiment_params.get('additional_context', '')
-
-        # if flag true get prev patch crash from db
-        if source_crash_flag and run_id_prev:
-            crash_log = get_crash_log(run_id=run_id_prev, kind=CrashLogType.PATCH)
-            logger.debug(f'Loaded prev patch crash log: {crash_log}')
-            if source_resume_id:
-                resume_id = get_resume_id(run_id=run_id_prev)
-                logger.info(f'Query produced resume_id: {resume_id}')
-
-        # fallback on loading crash from file
-        elif crash_log_patch:
-            crash_path = Path(crash_log_patch)
-            if crash_path.exists():
-                logger.debug(f"Reading first attempt's crash log from {crash_path}")
-                try:
-                    with open(crash_path, "r", encoding="utf-8", errors="replace") as f:
-                        crash_log = f.read()
-                        prompt = 'Your previous fixes did not remove the crash as indicated by this new crash log: '
-                        prompt += f'<crash_log>{crash_log}</crash_log>'
-                except FileNotFoundError:
-                    logger.error(f"Error: The file {crash_path} was not found.")
-        
-        prompt += ' The workspace has been reset with the original files. ' 
-        if additional_context:
-            prompt += additional_context
-        # Example second try context: A known correct fix made changes to the following files: src/internal.c around lines 21167 - 21171, 23224, 25164 and 25176; wolfcrypt/src/dh.c near lines 1212, 1244, 1284 and 1289; and wolfcrypt/test/test.c near lines 14644, 14766 and 14812.
-        prompt += ' Use this information to reattempt the fix.'
-
-        # get list of files modified since start of run. relative paths used for navigating container and db
-        modified_files = conduct_run(vuln_id=vuln_id, container_name=container_name, prompt=prompt, agent=agent, resume_flag=True, resume_session_id=resume_id, patch_url=patch_url)
-        
-        for m_file in modified_files:
-            content = get_container_cat(container_name, m_file)
-            # update db with patch content
-
-            update_patch(run_id=run_id, file_path=str(m_file), content=content)
-
-        # TODO look into deleting later
-        run_path = Path(__file__).parent / 'runs' / run_id
-
-    # re-compile
-    recompile_container(container_name)
-    # TODO : Explore how much we need to verify compile success
-    # Will compile failure automatically result in re-fuzz crash?
-
-    # re-run poc and capture new crash/success log
-    fuzz_result = refuzz(container_name)
-
-    insert_crash_log(run_id=run_id, kind=CrashLogType.PATCH, crash_log=fuzz_result.stderr)
-
-    logger.info('######### CARO Experiment Run Complete #########')
-
-    caro_dir = Path(__file__).parent
-
-    caro_log_path = caro_dir / 'caro.log'
-
-    # update caro_log in db
-    try:
-        update_caro_log(run_id, str(caro_log_path))
-    except Exception as e:
-        logger.error(f'Error updating caro_log in database for run {run_id}: {e}')
-
-    # will want to use same run folder as first attempt?
-    # QUESTION: regenerate original workspace for second attempt?
-    # if the agent's patch did not resolve the crash are its changes benign or necessitate more fixes?
-    # For now agent's second attempt will start from original codebase again
+            logger.error(f'Error encountered: {e}')

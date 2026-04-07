@@ -1,11 +1,11 @@
-{"arvo_id": 42531212,
-    "container_name": "i-42531212",
-    "initial_prompt": true,
-    "source_crash_db": false,
-    "run_id": null,
-    "source_resume_db": false,
-    "crash_log_patch": null,
-    "resume_flag": false,
-    "resume_id": null,
-    "additional_context": null
+{
+    "experiment_tag": "baseline-patch-envmd",
+    "arvo_id": 42531667,
+    "container_name": "rootainer",
+    "agent": "claude",
+    "is_loc_mode": false,
+    "is_patch_mode": true,
+    "loc_run_id": "",
+    "is_resume": false,
+    "resume_id": ""
 }
