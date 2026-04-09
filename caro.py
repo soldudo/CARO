@@ -9,6 +9,18 @@ from queries import get_context, get_localization, update_caro_log
 from agent_tools import conduct_run
 from run_parser import parse_agent_run
 
+    """_summary_
+    the main caro experiment script. 
+    This will run localization and patching in sequence, 
+    or just one of the two if specified in the config. 
+    It also handles logging and experiment setup. 
+
+    Returns:
+        _type_: _description_
+    """
+
+
+# seting some basic rules for logging 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(name)s] - %(message)s',
@@ -20,9 +32,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def load_config(config_path=None):
+
+"""Load experiment parameters from a JSON config file."""
+
     if config_path is None:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(base_dir, 'experiment_setup.json')
+        config_path = os.path.join(base_dir, 'config', 'experiment_setup.json')
 
     if not os.path.exists(config_path):
         logger.critical(f"Config file not found at {config_path}")

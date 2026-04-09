@@ -1,0 +1,146 @@
+[2026-03-20 09:32:27] ==========================================
+[2026-03-20 09:32:27]  CARO Parallel Monitor  —  2 workers
+[2026-03-20 09:32:27]  Total IDs : 4
+[2026-03-20 09:32:27]  Channel   : ntfy: https://ntfy.sh/uic-tamusa-experiment
+[2026-03-20 09:32:27] ==========================================
+[2026-03-20 09:32:27]   ntfy sent: CARO Batch Started (0/4)
+[2026-03-20 09:32:27]   Launched worker 0 (PID 155695) on rootainer-0
+[2026-03-20 09:32:27] [W0/rootainer-0] Worker started
+[2026-03-20 09:32:27]   Launched worker 1 (PID 155702) on rootainer-1
+[2026-03-20 09:32:27] [W1/rootainer-1] Worker started
+[2026-03-20 09:32:27] [W0] ── ARVO 42470157 ──
+[2026-03-20 09:32:27] [W1] ── ARVO 42470816 ──
+[2026-03-20 09:32:27] [W0] Attempt 1/3 for 42470157
+[2026-03-20 09:32:27] [W1] Attempt 1/3 for 42470816
+[2026-03-20 09:45:13] [W0] SUCCESS: 42470157
+[2026-03-20 09:45:13]   ntfy sent: CARO Done [rootainer-0]: 42470157 (1/4)
+[2026-03-20 09:45:14] [W0] ── ARVO 42470838 ──
+[2026-03-20 09:45:14] [W0] Attempt 1/3 for 42470838
+[2026-03-20 09:51:38] [W1] SUCCESS: 42470816
+[2026-03-20 09:51:39]   ntfy sent: CARO Done [rootainer-1]: 42470816 (2/4)
+[2026-03-20 09:51:39] [W1] ── ARVO 42475106 ──
+[2026-03-20 09:51:39] [W1] Attempt 1/3 for 42475106
+[2026-03-20 09:58:35] [W0] SUCCESS: 42470838
+[2026-03-20 09:58:35]   ntfy sent: CARO Done [rootainer-0]: 42470838 (3/4)
+[2026-03-20 09:58:35] [W0] Queue empty — worker done.
+[2026-03-20 10:03:03]   ntfy sent: CARO Update: 3/4 done
+[2026-03-20 10:10:24] [W1] SUCCESS: 42475106
+[2026-03-20 10:10:25]   ntfy sent: CARO Done [rootainer-1]: 42475106 (4/4)
+[2026-03-20 10:10:25] [W1] Queue empty — worker done.
+[2026-03-20 10:10:25] BATCH COMPLETE: 4/4 succeeded, 0 failed
+[2026-03-20 10:10:25]   ntfy sent: CARO Batch COMPLETE (4/4)
+[2026-03-20 11:07:03] ==========================================
+[2026-03-20 11:07:03]  CARO Parallel Monitor  —  2 workers
+[2026-03-20 11:07:03]  Total IDs : 1
+[2026-03-20 11:07:03]  Channel   : ntfy: https://ntfy.sh/uic-tamusa-experiment
+[2026-03-20 11:07:03] ==========================================
+[2026-03-20 11:07:03]   ntfy sent: CARO Batch Started (0/1)
+[2026-03-20 11:07:03]   Launched worker 0 (PID 162062) on rootainer-0
+[2026-03-20 11:07:03] [W0/rootainer-0] Worker started
+[2026-03-20 11:07:03] [W1/rootainer-1] Worker started
+[2026-03-20 11:07:03]   Launched worker 1 (PID 162069) on rootainer-1
+[2026-03-20 11:07:03] [W0] ── ARVO 42534913 ──
+[2026-03-20 11:07:03] [W1] Queue empty — worker done.
+[2026-03-20 11:07:03] [W0] Attempt 1/3 for 42534913
+[2026-04-03 09:58:56] ==========================================
+[2026-04-03 09:58:56]  CARO Parallel Monitor  —  4 workers
+[2026-04-03 09:58:56]  Total IDs : 5
+[2026-04-03 09:58:56]  Channel   : ntfy: https://ntfy.sh/uic-tamusa-experiment
+[2026-04-03 09:58:56] ==========================================
+[2026-04-03 09:58:57]   ntfy sent: CARO Batch Started (0/5)
+[2026-04-03 09:58:57] [W0/rootainer-0] Worker started
+[2026-04-03 09:58:57]   Launched worker 0 (PID 19774) on rootainer-0
+[2026-04-03 09:58:57]   Launched worker 1 (PID 19782) on rootainer-1
+[2026-04-03 09:58:57] [W1/rootainer-1] Worker started
+[2026-04-03 09:58:57]   Launched worker 2 (PID 19790) on rootainer-2
+[2026-04-03 09:58:57] [W2/rootainer-2] Worker started
+[2026-04-03 09:58:57]   Launched worker 3 (PID 19803) on rootainer-3
+[2026-04-03 09:58:57] [W3/rootainer-3] Worker started
+[2026-04-03 09:58:57] [W1] ── ARVO 42470541 ──
+[2026-04-03 09:58:57] [W0] ── ARVO 42470727 ──
+[2026-04-03 09:58:57] [W2] ── ARVO 42471662 ──
+[2026-04-03 09:58:57] [W3] ── ARVO 42509480 ──
+[2026-04-03 09:58:57] [W1] Attempt 1/3 for 42470541
+[2026-04-03 09:58:57] [W0] Attempt 1/3 for 42470727
+[2026-04-03 09:58:57] [W2] Attempt 1/3 for 42471662
+[2026-04-03 09:58:57] [W3] Attempt 1/3 for 42509480
+[2026-04-03 09:58:58] [W2] FAILED (exit 1) attempt 1 for 42471662
+[2026-04-03 09:58:58] [W3] FAILED (exit 1) attempt 1 for 42509480
+[2026-04-03 09:58:58] [W0] FAILED (exit 1) attempt 1 for 42470727
+[2026-04-03 09:58:58] [W1] FAILED (exit 1) attempt 1 for 42470541
+[2026-04-03 10:03:27] ==========================================
+[2026-04-03 10:03:27]  CARO Parallel Monitor  —  1 workers
+[2026-04-03 10:03:27]  Total IDs : 4
+[2026-04-03 10:03:27]  Channel   : ntfy: https://ntfy.sh/uic-tamusa-experiment
+[2026-04-03 10:03:27] ==========================================
+[2026-04-03 10:03:28]   ntfy sent: CARO Batch Started (0/4)
+[2026-04-03 10:03:28] [W0/rootainer-0] Worker started
+[2026-04-03 10:03:28]   Launched worker 0 (PID 20956) on rootainer-0
+[2026-04-03 10:03:28] [W0] ── ARVO 42470541 ──
+[2026-04-03 10:03:28] [W0] Attempt 1/3 for 42470541
+[2026-04-03 10:31:29] [W0] FAILED (exit 1) attempt 1 for 42470541
+[2026-04-03 10:31:59] [W0] Attempt 2/3 for 42470541
+[2026-04-03 10:32:05] [W0] FAILED (exit 1) attempt 2 for 42470541
+[2026-04-03 10:32:35] [W0] Attempt 3/3 for 42470541
+[2026-04-03 10:32:42] [W0] FAILED (exit 1) attempt 3 for 42470541
+[2026-04-03 10:32:42] [W0] GAVE UP on 42470541 after 3 attempts
+[2026-04-03 10:32:42]   ntfy sent: CARO FAILED [rootainer-0]: 42470541
+[2026-04-03 10:32:42] [W0] ── ARVO 42470727 ──
+[2026-04-03 10:32:42] [W0] Attempt 1/3 for 42470727
+[2026-04-03 10:32:46] [W0] FAILED (exit 1) attempt 1 for 42470727
+[2026-04-03 10:33:20] [W0] Attempt 2/3 for 42470727
+[2026-04-03 10:33:22] [W0] FAILED (exit 1) attempt 2 for 42470727
+[2026-04-03 10:33:55] [W0] Attempt 3/3 for 42470727
+[2026-04-03 10:33:59] [W0] FAILED (exit 1) attempt 3 for 42470727
+[2026-04-03 10:33:59] [W0] GAVE UP on 42470727 after 3 attempts
+[2026-04-03 10:33:59]   ntfy sent: CARO FAILED [rootainer-0]: 42470727
+[2026-04-03 10:33:59] [W0] ── ARVO 42471662 ──
+[2026-04-03 10:33:59] [W0] Attempt 1/3 for 42471662
+[2026-04-03 10:34:02] [W0] FAILED (exit 1) attempt 1 for 42471662
+[2026-04-03 10:34:36] [W0] Attempt 2/3 for 42471662
+[2026-04-03 10:34:39] [W0] FAILED (exit 1) attempt 2 for 42471662
+[2026-04-03 10:35:12] [W0] Attempt 3/3 for 42471662
+[2026-04-03 10:35:15] [W0] FAILED (exit 1) attempt 3 for 42471662
+[2026-04-03 10:35:15] [W0] GAVE UP on 42471662 after 3 attempts
+[2026-04-03 10:35:15]   ntfy sent: CARO FAILED [rootainer-0]: 42471662
+[2026-04-03 10:35:15] [W0] ── ARVO 42517246 ──
+[2026-04-03 10:35:15] [W0] Attempt 1/3 for 42517246
+[2026-04-03 10:35:18] [W0] FAILED (exit 1) attempt 1 for 42517246
+[2026-04-03 10:35:51] [W0] Attempt 2/3 for 42517246
+[2026-04-03 10:35:54] [W0] FAILED (exit 1) attempt 2 for 42517246
+[2026-04-03 10:36:27] [W0] Attempt 3/3 for 42517246
+[2026-04-03 10:36:31] [W0] FAILED (exit 1) attempt 3 for 42517246
+[2026-04-03 10:36:31] [W0] GAVE UP on 42517246 after 3 attempts
+[2026-04-03 10:36:31]   ntfy sent: CARO FAILED [rootainer-0]: 42517246
+[2026-04-03 10:36:31] [W0] Queue empty — worker done.
+[2026-04-03 10:36:31] BATCH COMPLETE: 0/4 succeeded, 4 failed
+[2026-04-03 10:36:32]   ntfy sent: CARO Batch COMPLETE (0/4)
+[2026-04-06 14:59:01] ==========================================
+[2026-04-06 14:59:01]  CARO Parallel Monitor  —  4 workers
+[2026-04-06 14:59:01]  Total IDs : 1
+[2026-04-06 14:59:01]  Channel   : ntfy: https://ntfy.sh/uic-tamusa-experiment
+[2026-04-06 14:59:01] ==========================================
+[2026-04-06 14:59:02]   ntfy sent: CARO Batch Started (0/1)
+[2026-04-06 14:59:02]   Launched worker 0 (PID 109164) on rootainer-0
+[2026-04-06 14:59:02] [W0/rootainer-0] Worker started
+[2026-04-06 14:59:02]   Launched worker 1 (PID 109171) on rootainer-1
+[2026-04-06 14:59:02] [W1/rootainer-1] Worker started
+[2026-04-06 14:59:02]   Launched worker 2 (PID 109181) on rootainer-2
+[2026-04-06 14:59:02] [W2/rootainer-2] Worker started
+[2026-04-06 14:59:02]   Launched worker 3 (PID 109192) on rootainer-3
+[2026-04-06 14:59:02] [W3/rootainer-3] Worker started
+[2026-04-06 14:59:02] [W0] ── ARVO 42474837 ──
+[2026-04-06 14:59:02] [W1] Queue empty — worker done.
+[2026-04-06 14:59:02] [W2] Queue empty — worker done.
+[2026-04-06 14:59:02] [W3] Queue empty — worker done.
+[2026-04-06 14:59:02] [W0] Attempt 1/3 for 42474837
+[2026-04-06 14:59:02] [W0] FAILED (exit 1) attempt 1 for 42474837
+[2026-04-06 14:59:33] [W0] Attempt 2/3 for 42474837
+[2026-04-06 14:59:33] [W0] FAILED (exit 1) attempt 2 for 42474837
+[2026-04-06 15:00:03] [W0] Attempt 3/3 for 42474837
+[2026-04-06 15:00:04] [W0] FAILED (exit 1) attempt 3 for 42474837
+[2026-04-06 15:00:04] [W0] GAVE UP on 42474837 after 3 attempts
+[2026-04-06 15:00:04]   ntfy sent: CARO FAILED [rootainer-0]: 42474837
+[2026-04-06 15:00:04] [W0] Queue empty — worker done.
+[2026-04-06 15:00:04] BATCH COMPLETE: 0/1 succeeded, 1 failed
+[2026-04-06 15:00:05]   ntfy sent: CARO Batch COMPLETE (0/1)

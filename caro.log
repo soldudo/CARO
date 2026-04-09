@@ -1,0 +1,5 @@
+2026-04-03 10:36:27,735 - [__main__] - ######### Starting CARO Experiment Run #########
+2026-04-03 10:36:27,736 - [__main__] - loaded experiment parameters: {'arvo_id': 42517246, 'container_name': 'rootainer-0', 'agent': 'claude', 'is_loc_mode': True, 'is_patch_mode': True, 'loc_run_id': '', 'is_resume': False, 'resume_id': ''}
+2026-04-03 10:36:28,986 - [__main__] - Claude credentials refreshed from rootainer → rootainer-0
+2026-04-03 10:36:31,364 - [__main__] - Claude auth check failed in rootainer-0: exit code 1
+2026-04-03 10:36:31,364 - [__main__] - Re-authenticate Claude in rootainer via setup_experiment.py → [7] Re-auth

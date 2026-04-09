@@ -1,7 +1,7 @@
 import json
 import subprocess
 
-setup_path = "experiment_setup.json"
+setup_path = "config/experiment_setup.json"
 
 experiment_list = [
     # 42534486,
