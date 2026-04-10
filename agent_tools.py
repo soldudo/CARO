@@ -2,7 +2,7 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
-from arvo_tools import standby_dind, cleanup_dind, strip_git_history
+from arvo_tools import standby_dind, cleanup_dind
 from queries import get_original_crash_log
 import subprocess
 import time
@@ -91,21 +91,25 @@ def process_codex_event(event):
 # if flag is true, but id is none, last will be used
 # def conduct_run(vuln_id: str, run_id: str, container_name: str, prompt: str, agent: str, run_mode: str, is_resume: bool = False, resume_session_id: str =None):
 
-def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode='loc', loc_run_id=None, is_resume=False, resume_session_id=None):
+def conduct_run(experiment_tag, vuln_id, run_id, container_name, prompt, agent, run_mode, loc_run_id=None, is_resume=False, resume_session_id=None):
+    # vuln_id=run_params.vuln_id
+    # run_id=run_params.run_id
+    # agent=run_params.agent
+    # run_mode=run_params.run_mode
+    # loc_run_id=run_params.loc_run_id
+    # prompt=run_params.prompt
+    # is_resume=run_params.is_resume
+    # resume_session_id=run_params.resume_session_id
 
     # in case previous run crashed. Handle this better
-    cleanup_dind('vulnscan', rootainer_name=container_name)
+    cleanup_dind('vulnscan')
 
-    standby_dind(container_name='vulnscan', vuln_id=vuln_id, rootainer_name=container_name)
-
-    # Strip git history before the agent starts — prevents it from finding
-    # the fix commit via `git log` or `git show` (would trivialize localization).
-    strip_git_history(vulnscan_name='vulnscan', rootainer_name=container_name)
+    standby_dind(container_name='vulnscan', vuln_id=vuln_id)
 
     # TODO: Add robust handling & failsafe of crash_log copy to container
     crash_log_original = get_original_crash_log(vuln_id)
 
-    copy_crash_cmd = ['docker', 'exec', '-i', container_name, 'sh', '-c', 'cat > opt/agent/crash.log']
+    copy_crash_cmd = ['docker', 'exec', '-i', 'rootainer', 'sh', '-c', 'cat > opt/agent/crash.log']
     process = subprocess.Popen(
         copy_crash_cmd,
         stdin=subprocess.PIPE,
@@ -118,9 +122,11 @@ def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode='loc', 
 
     if (agent == 'claude'):
         agent_args = ['claude', '-p', prompt]
-
+        
+        # Handle resuming a previous session
         if is_resume and resume_session_id:
             agent_args += ['--resume', resume_session_id]
+        # resume previous session if no session_id passed
         elif is_resume and not resume_session_id:
             agent_args += ['--continue']
         agent_args += ['--output-format', 'json']
@@ -136,7 +142,7 @@ def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode='loc', 
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(f'Logging to {log_path}\n')
-    logger.info(f"Invoking agent with: {command}")
+    logger.debug(f"Invoking agent with: {command}")
     
     start_time = int(time.time())
     duration = 0
@@ -146,11 +152,12 @@ def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode='loc', 
             'log_type': 'session_start',
             'timestamp_iso': datetime.now().isoformat(timespec='seconds'),
             'timestamp_unix': start_time,
+            'experiment_tag': experiment_tag,
             'vuln': vuln_id,
+            'command': command,
             'run_mode': run_mode,
             'loc_run_id': loc_run_id,
-            'prompt': prompt,
-            'command': command
+            'prompt': prompt
         }
 
     with open(log_path, 'w', encoding='utf-8') as log_file:
@@ -250,6 +257,6 @@ def conduct_run(vuln_id, run_id, container_name, prompt, agent, run_mode='loc', 
                 agent_log = ''
 
             # wipe arvo container in rootainer
-            cleanup_dind('vulnscan', rootainer_name=container_name)
+            cleanup_dind('vulnscan')
 
     return log_path

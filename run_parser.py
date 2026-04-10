@@ -3,6 +3,7 @@ import logging
 import re
 import sqlite3
 from pathlib import Path
+from queries import _get_experiment_id_by_tag
 
 logger = logging.getLogger(__name__)
 
@@ -13,15 +14,29 @@ def init_db():
 
     cursor = conn.cursor()
     try:
+        # table for experiment setup
+        cursor.execute('''CREATE TABLE IF NOT EXISTS experiments (
+            experiment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_tag TEXT UNIQUE NOT NULL,
+            description TEXT,
+            prompt_template TEXT,
+            markdown_json TEXT
+        )''')
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS runs (
                 run_id TEXT PRIMARY KEY,
-                run_mode TEXT NOT NULL DEFAULT 'loc',
+                experiment_id INTEGER REFERENCES experiments(experiment_id),
+                       
+                run_mode TEXT NOT NULL,
+                       
                 vuln_id INTEGER NOT NULL,
                 timestamp TEXT,
                 agent TEXT,
                 agent_model TEXT,
+                       
                 prompt TEXT,
+                       
                 result TEXT,
                 result_json TEXT,
                 agent_thought_log TEXT,
@@ -33,6 +48,7 @@ def init_db():
                 output_tokens INTEGER,
                 total_tokens INTEGER,
                 input_tokens INTEGER,
+                       
                 input_from_cache_tokens INTEGER,
                 input_written_to_cache_tokens INTEGER,
                 usage_dict TEXT,
@@ -49,13 +65,7 @@ def init_db():
             )
         ''')
 
-        # Migrations for existing databases
-        for col, defn in [('run_mode', "TEXT NOT NULL DEFAULT 'loc'"), ('prompt', 'TEXT')]:
-            try:
-                cursor.execute(f'ALTER TABLE runs ADD COLUMN {col} {defn}')
-            except sqlite3.OperationalError:
-                pass  # column already exists
-
+        # Table for agent messages during run
         cursor.execute('''CREATE TABLE IF NOT EXISTS run_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
@@ -66,12 +76,13 @@ def init_db():
             FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
         )''')
 
+        # table for patch info and results
         cursor.execute('''CREATE TABLE IF NOT EXISTS patch_data (
             run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
-            experiment_tag TEXT,
             loc_source TEXT,
             is_crash_resolved BOOLEAN,
-            patch_crash_log TEXT
+            patch_crash_log TEXT,
+            compile_errors TEXT
         )''')
 
         conn.commit()
@@ -79,15 +90,14 @@ def init_db():
         cursor.close()
         conn.close()
 
-def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None):
+def parse_agent_run(run_path: Path):
     run_id = run_path.parent.name
-    session_start = session_end = None
-    agent_output_events = []  # collects all individual agent events
+    session_start = agent_output = session_end = None
     logger.debug(f'run_path: {run_path} exists: {run_path.exists()} is file: {run_path.is_file()}')
 
     if not run_path.exists() or not run_path.is_file():
         raise FileNotFoundError(f'The log file at {run_path} does not exist.')
-
+    
     logger.info(f'Parsing run log at {run_path}')
     with run_path.open('r', encoding='utf-8') as run_file:
         agent_log = run_file.read()
@@ -95,7 +105,7 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
         for raw_line in run_file:
             if not raw_line.strip():
                 continue
-
+            
             try:
                 line = json.loads(raw_line)
             except json.JSONDecodeError:
@@ -103,38 +113,42 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
                 continue
 
             log_type = line.get('log_type')
+            # stream_output only needed for early runs and can phase out
             if log_type in ("agent_output", "stream_output"):
-                data = line.get('data')
-                # Old format: single line where data is the full event list
-                if isinstance(data, list):
-                    agent_output_events.extend(data)
-                # New format: one event dict per line
-                elif isinstance(data, dict):
-                    agent_output_events.append(data)
+                agent_output = line
             elif log_type == "session_start":
                 session_start = line
             elif log_type == "session_end":
                 session_end = line
 
-    if not agent_output_events:
-        logger.critical(f'CRITICAL: no agent output found in run log.')
-        raise ValueError(f'CRITICAL: no agent output found in run log.')
+    if not agent_output:
+        logger.critical(f'CRITICAL: agent log not found in run log. Exiting.')
+        raise ValueError(f'CRITICAL: agent log not found in run log. Exiting.')
 
     run_mode = session_start.get('run_mode')
 
+    experiment_tag = session_start.get('experiment_tag')
+    experiment_id = None
+    if experiment_tag:
+        experiment_id = _get_experiment_id_by_tag(experiment_tag)
+        if not experiment_id:
+            logger.warning(f"Experiment tag '{experiment_tag}' not found. Inserting run without ID.")
+
     vuln_id = session_start.get('vuln')
+
+    prompt = session_start.get('prompt')
+
+    loc_run_id = session_start.get('loc_run_id')
+
+    # timestamp_unix = int(session_start.get('timestamp_unix'))
     timestamp_iso = session_start.get('timestamp_iso')
     duration = int(session_end.get('duration_seconds', 0))
     command_list = session_start.get('command')
+    # patch_url = session_start.get('patch_url')
     return_code = session_end.get('return_code')
-    # Prefer explicit params (passed by caro.py); fall back to session_start fields
-    # (populated by conduct_run once part 2 lands)
-    run_mode = run_mode or session_start.get('run_mode', 'loc')
-    loc_run_id = loc_run_id or session_start.get('loc_run_id')
-    prompt = session_start.get('prompt')
 
-    # Unified event list — works for both old and new Claude CLI formats
-    agent_trace = agent_output_events
+    # agent log is a list of json dicts
+    agent_trace = agent_output.get('data', [])
 
     # running agent message narrative stored in this list
     assistant_event_list = []
@@ -147,19 +161,6 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
 
     agent_turn = 1
     agent_model = ''
-
-    # Initialize result fields — populated by 'result' event in the loop
-    session_id = ''
-    result_type = None
-    result_error_flag = None
-    result = None
-    stop_reason = None
-    total_cost_usd = None
-    num_turns = None
-    usage_dict = {}
-    model_usage_dict = {}
-    input_tokens = input_from_cache_tokens = input_written_to_cache_tokens = 0
-    input_total_tokens = output_tokens = total_tokens = 0
 
     logger.info('Parsing agent trace..')
     for event in agent_trace:
@@ -233,9 +234,6 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
             case 'result':
                 result_type = event.get('subtype')
                 result_error_flag = event.get('is_error')
-                # session_id may only appear here when there's no 'system' event
-                if not session_id:
-                    session_id = event.get('session_id', '')
 
                 total_cost_usd = event.get('total_cost_usd')
                 duration_ms = event.get('duration_ms')
@@ -273,24 +271,25 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
         conn = sqlite3.connect(DB_PATH)
         conn.execute("PRAGMA foreign_keys = ON") 
         cursor = conn.cursor()
-        placeholders = ", ".join(["?"] * 29)
+        placeholders = ", ".join(["?"] * 30)
         cursor.execute(f'''
             INSERT INTO runs (
-                run_id, run_mode, vuln_id, timestamp, agent, agent_model, prompt,
-                result, result_json, agent_thought_log, agent_insight_log,
-                duration, total_cost_usd, num_turns, input_total_tokens, output_tokens,
-                total_tokens, input_tokens, input_from_cache_tokens, input_written_to_cache_tokens,
-                usage_dict, model_usage_dict, result_type, result_error_flag, stop_reason, return_code,
-                session_id, command, agent_log
+                run_id, run_mode, experiment_id,
+                vuln_id, timestamp, agent, agent_model, prompt,
+                result, result_json, agent_thought_log, agent_insight_log, duration,
+                total_cost_usd, num_turns, input_total_tokens, output_tokens, total_tokens,
+                input_tokens, input_from_cache_tokens, input_written_to_cache_tokens, usage_dict, model_usage_dict,
+                result_type, result_error_flag, stop_reason, return_code, session_id,
+                command, agent_log
             ) VALUES ({placeholders})
         ''', (
-            run_id, run_mode, vuln_id, timestamp_iso, 'claude', agent_model, prompt,
-            result, json.dumps(result_json), agent_thought_log, agent_insight_log,
-            duration, total_cost_usd, num_turns, input_total_tokens, output_tokens,
-            total_tokens, input_tokens, input_from_cache_tokens, input_written_to_cache_tokens,
-            json.dumps(usage_dict) if usage_dict else None, json.dumps(model_usage_dict) if model_usage_dict else None,
-            result_type, result_error_flag, stop_reason, return_code,
-            session_id, command, agent_log
+            run_id, run_mode, experiment_id,
+            vuln_id, timestamp_iso, 'claude', agent_model, prompt,
+            result, json.dumps(result_json), agent_thought_log, agent_insight_log, duration,
+            total_cost_usd, num_turns, input_total_tokens, output_tokens, total_tokens,
+            input_tokens, input_from_cache_tokens, input_written_to_cache_tokens, json.dumps(usage_dict) if usage_dict else None, json.dumps(model_usage_dict) if model_usage_dict else None,
+            result_type, result_error_flag, stop_reason, return_code, session_id,
+            command, agent_log
         ))
 
         # cursor.execute('''
@@ -307,8 +306,9 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
             ''', (run_id, event.get('turn'), event.get('type'), event.get('text'), json.dumps(event.get('usage', {}))))
 
         if run_mode == 'patch':
-            cursor.execute('''
-                INSERT INTO patch_data (run_id, loc_source) VALUES (?, ?)
+            cursor.execute(f'''
+                INSERT INTO patch_data (run_id, loc_source)
+                    VALUES (?, ?)
             ''', (run_id, loc_run_id))
 
         conn.commit()
@@ -320,84 +320,7 @@ def parse_agent_run(run_path: Path, run_mode: str = None, loc_run_id: str = None
         cursor.close()
         conn.close()
 
-    return return_code
-
-
-def parse_patch_run(patch_log_path: Path, run_id: str):
-    """Parse a patch phase log and store diff + result in the DB."""
-    if not patch_log_path.exists() or not patch_log_path.is_file():
-        logger.error(f'Patch log not found: {patch_log_path}')
-        return
-
-    logger.info(f'Parsing patch log at {patch_log_path}')
-    with patch_log_path.open('r', encoding='utf-8') as f:
-        patch_log = f.read()
-
-    diff_pattern = re.compile(r'```diff\s*(.*?)\s*```', re.DOTALL)
-    patch_diff = ''
-    patch_result = 'UNKNOWN'
-
-    for raw_line in patch_log.splitlines():
-        if not raw_line.strip():
-            continue
-        try:
-            line = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-
-        if line.get('log_type') not in ('agent_output', 'stream_output'):
-            continue
-
-        event = line.get('data', {})
-        if not isinstance(event, dict):
-            continue
-
-        event_type = event.get('type')
-
-        if event_type == 'assistant':
-            for block in event.get('message', {}).get('content', []):
-                if block.get('type') != 'text':
-                    continue
-                text = block.get('text', '')
-                if not patch_diff:
-                    m = diff_pattern.search(text)
-                    if m:
-                        patch_diff = m.group(1).strip()
-                # NOT_PATCHED takes precedence — check it first
-                if 'NOT_PATCHED' in text:
-                    patch_result = 'NOT_PATCHED'
-                elif 'PATCHED' in text and patch_result == 'UNKNOWN':
-                    patch_result = 'PATCHED'
-
-        elif event_type == 'result':
-            result_text = event.get('result', '')
-            if 'NOT_PATCHED' in result_text:
-                patch_result = 'NOT_PATCHED'
-            elif 'PATCHED' in result_text and patch_result == 'UNKNOWN':
-                patch_result = 'PATCHED'
-
-    logger.info(f'Patch parse complete: result={patch_result}, diff_len={len(patch_diff)}')
-
-    init_db()
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    try:
-        cursor.execute('''
-            UPDATE runs SET patch_diff = ?, patch_result = ?, patch_log = ?
-            WHERE run_id = ?
-        ''', (patch_diff or None, patch_result, patch_log, run_id))
-        if cursor.rowcount == 0:
-            logger.error(f'No run found with id {run_id} for patch update')
-        else:
-            logger.info(f'Patch data stored for run {run_id}')
-        conn.commit()
-    except sqlite3.Error as e:
-        logger.error(f'DB error storing patch data for {run_id}: {e}')
-    finally:
-        cursor.close()
-        conn.close()
-
-
+# Run this file directly & uncomment parse_agent_run to manually parse a run specified below
 if __name__ == '__main__':
     logging.basicConfig(
         filename='run_parser.log', 
@@ -407,4 +330,5 @@ if __name__ == '__main__':
     
     logger.info("Script started directly.")
     trace_file = Path('runs/arvo-435781342-vul1772638872/agent_arvo-435781342-vul1772638872.log')
-    parse_agent_run(trace_file)
+    
+    # parse_agent_run(trace_file)
