@@ -1,48 +1,34 @@
-# =====================================================================
-# memory.dl - Repair contract memory for ARVO patching runs.
-#
-# This file is a library of transferable repair contracts learned from
-# comparing patching attempts against ground-truth fixes.
-#
-# Each contract is a pyDatalog rule whose body is a conjunction of
-# condition predicates (see memory_vocab.py). When a new bug conditions
-# are asserted at query time, the rules whose bodies become satisfied
-# are the contracts that bug must respect.
-#
-# Contracts are abstract: variables (uppercase X, F, L, ...) range over
-# any binding. Bug IDs and project names appear ONLY as comments above
-# each contract block, never inside the rule body.
-#
-# File format: pyDatalog source loadable via pyDatalog.load(text). The
-# loader uses Python ast.parse, so comments MUST start with `#` and the
-# file may not contain raw prose outside Python-syntax-valid lines.
-# New contracts append at the end. Hand-editing is fine.
-# =====================================================================
 
-
-# Source:    hand-authored seed by Kenan ()
+# Source:     seed by Kenan ( this is as a starting point crafted based on ARVO experince )
 # Class:     null_pointer_dereference
 # Intuition: any pointer passed by reference to a function that may
 #            mutate it must be re-validated for null before subsequent
 #            dereference. This is a rule I saw in few bugs and their 
 #            correpsoding repair 
+
+
+
 contract_fires('must_recheck_null_after_byref') <= (
     passed_by_ref(X, F) &
     modifies(F, X) &
     dereferenced_at(X, L)
 )
 
-# CONTRACT
+# Kenan: For now allow arvo as reference but u should remove it later
 # Source:    arvo-42470157-vul-1774017155-patch  (arvo 42470157, project libxml2)
 # Class:     uninitialized_read
+
 # Intuition: When a function returns an error, the caller must check the
 #            return value before continuing to use the passed-in object,
 #            otherwise downstream code may operate on uninitialized state.
 
+
+#bug_class('uninitialized_read')
+
+# Kenan the last func act as a rule for checking 
 contract_fires('must_check_return_before_use') <= (
     returned_from(X, F) &
     passed_by_ref(Y, F) &
     used_after(Y, L) &
-    ~null_checked_before(X, L) &
-    bug_class('uninitialized_read')
+    ~null_checked_before(X, L) 
 )

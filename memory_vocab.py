@@ -12,6 +12,10 @@ this exact vocabulary, otherwise their outputs cannot be reconciled.
 # inlcuding but not limited to 
 # Standard bug taxonomy. Aligned with ARVO/sanitizer crash_type categories so
 # the deterministic extractor can map ARVO rows directly into bug_type facts.
+
+# one note, ARVO as many sub-types
+# this should be as generic as possible
+
 BUG_TYPES = [
     'heap_buffer_overflow',
     'stack_buffer_overflow',
